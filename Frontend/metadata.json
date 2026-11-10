@@ -1,0 +1,6 @@
+{
+  "name": "TaskFlow - Full Stack Task & Project Management",
+  "description": "Full-stack project and task management application inspired by Trello and Asana with real-time boards, collaboration, team roles, and metrics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
