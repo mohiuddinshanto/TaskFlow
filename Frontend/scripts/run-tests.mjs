@@ -13,6 +13,7 @@ try {
     outbase: root,
     outdir: output,
     bundle: true,
+    packages: 'external',
     platform: 'node',
     format: 'esm',
     logLevel: 'silent',

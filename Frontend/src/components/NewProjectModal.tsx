@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Plus, FolderKanban, Users } from 'lucide-react';
+import { X, Plus, FolderKanban } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { Avatar } from './Avatar';
 import toast from 'react-hot-toast';
@@ -17,7 +17,7 @@ export const NewProjectModal: React.FC = () => {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState('Product Development');
-  const [startDate, setStartDate] = useState(new Date().toISOString().split('T')[0]);
+  const [startDate] = useState(new Date().toISOString().split('T')[0]);
   const [dueDate, setDueDate] = useState(
     new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0]
   );

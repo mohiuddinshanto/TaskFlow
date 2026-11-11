@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { useStore } from './store/useStore';
 import { Sidebar } from './components/Sidebar';
@@ -35,7 +35,7 @@ export default function App() {
     }
   }, [theme]);
 
-  // Initial auth verification and auto-demo login
+  // Restore the current user's authenticated session on page load.
   useEffect(() => {
     checkAuth();
   }, [checkAuth]);

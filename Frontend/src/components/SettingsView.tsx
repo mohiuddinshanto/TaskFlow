@@ -1,39 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { Settings as SettingsIcon, Sun, Moon, Database, ShieldAlert, CheckCircle2, RefreshCw, HardDrive } from 'lucide-react';
+import { Sun, Moon } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { api } from '../lib/api';
-import toast from 'react-hot-toast';
+import { DatabaseStatus } from '../types/index';
 
 export const SettingsView: React.FC = () => {
-  const { theme, toggleTheme, currentUser, fetchDashboardStats, fetchProjects, fetchTasks } = useStore();
-  const [isResetting, setIsResetting] = useState(false);
-  const [dbStatus, setDbStatus] = useState<any>(null);
+  const { theme, toggleTheme } = useStore();
+  const [dbStatus, setDbStatus] = useState<DatabaseStatus | null>(null);
 
   useEffect(() => {
-    api.get<any>('/api/dashboard/status')
+    api.get<DatabaseStatus>('/api/dashboard/status')
       .then(setDbStatus)
       .catch(() => {});
   }, []);
-
-  const handleResetData = async () => {
-    if (!window.confirm('Reset all demo data back to default factory baseline? Any new custom items will be restored.')) {
-      return;
-    }
-    setIsResetting(true);
-    try {
-      await api.post('/api/dashboard/reset-data');
-      toast.success('Workspace reset to baseline sample data');
-      await fetchProjects();
-      await fetchTasks();
-      await fetchDashboardStats();
-      const status = await api.get<any>('/api/dashboard/status');
-      setDbStatus(status);
-    } catch (err: any) {
-      toast.error(err.message || 'Could not reset workspace');
-    } finally {
-      setIsResetting(false);
-    }
-  };
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-4xl mx-auto">
@@ -78,31 +57,6 @@ export const SettingsView: React.FC = () => {
         </div>
       </div>
 
-      {/* Admin Maintenance */}
-      {currentUser?.role === 'admin' && (
-        <div className="p-5 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
-          <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
-            <Database className="w-4 h-4 text-blue-600" />
-            <span>Developer &amp; Admin Maintenance</span>
-          </div>
-
-          <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-            Quickly restore the initial factory seed dataset (Alex Morgan, Sarah Connor, Michael Chen, initial tasks, and Kanban columns) for demonstration or evaluation purposes.
-          </p>
-
-          <div className="pt-1">
-            <button
-              onClick={handleResetData}
-              disabled={isResetting}
-              className="py-2 px-3.5 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-900 text-xs font-semibold rounded-lg transition-colors flex items-center gap-2 shadow-xs"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${isResetting ? 'animate-spin' : ''}`} />
-              <span>{isResetting ? 'Restoring...' : 'Restore Default Seed Data'}</span>
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* System Specifications Card */}
       <div className="p-5 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-200 dark:border-slate-800 text-xs space-y-3">
         <div className="flex items-center justify-between">
@@ -127,7 +81,7 @@ export const SettingsView: React.FC = () => {
           </div>
           <div>
             <span className="block text-slate-400">Authentication</span>
-            <span className="font-medium text-slate-800 dark:text-slate-200">JWT + bcrypt (BcryptJS)</span>
+            <span className="font-medium text-slate-800 dark:text-slate-200">Better Auth (scrypt)</span>
           </div>
           <div>
             <span className="block text-slate-400">Active Records</span>

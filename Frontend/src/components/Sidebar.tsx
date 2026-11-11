@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useStore, ActiveView } from '../store/useStore';
 import { Avatar } from './Avatar';
+import type { LucideIcon } from 'lucide-react';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -39,7 +40,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onCloseMobile }) => {
     unreadCount,
   } = useStore();
 
-  const navItems: { id: ActiveView; label: string; icon: React.FC<any> }[] = [
+  const navItems: { id: ActiveView; label: string; icon: LucideIcon }[] = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'board', label: 'Kanban Board', icon: KanbanSquare },
     { id: 'projects', label: 'Projects', icon: FolderKanban },

@@ -1,12 +1,11 @@
+import "dotenv/config";
 import { betterAuth } from "better-auth";
 import { mongodbAdapter } from "@better-auth/mongo-adapter";
-import { MongoClient } from "mongodb";
 import { randomBytes } from "node:crypto";
-import { database } from "../../server/db";
+import { database, getMongoClient } from "../../server/db";
 
-const uri = process.env.MONGODB_URI;
-const client = uri ? new MongoClient(uri) : null;
-const dbName = process.env.MONGODB_DB_NAME || "taskflow";
+const client = getMongoClient();
+const dbName = process.env.MONGODB_DB_NAME;
 const db = client?.db(dbName);
 
 if (!process.env.BETTER_AUTH_SECRET && !process.env.AUTH_SECRET) {
@@ -27,7 +26,7 @@ export const auth = betterAuth({
         after: async (user) => {
           const existing = database.getUserById(user.id) || database.getUserByEmail(user.email);
           if (!existing) {
-            database.createUser({
+            await database.createUser({
               id: user.id,
               name: user.name,
               email: user.email,
@@ -49,5 +48,7 @@ export const auth = betterAuth({
 });
 
 export async function connectAuthMongo(): Promise<void> {
-  if (client) await client.connect();
+  if (!client) return;
+  if (!dbName) throw new Error("MONGODB_DB_NAME is required for authentication storage.");
+  // The Native Driver client is connected by initDatabase; auth shares that same pool.
 }

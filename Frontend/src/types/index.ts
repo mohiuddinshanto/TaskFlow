@@ -38,6 +38,10 @@ export interface Project {
   updatedAt: string;
 }
 
+export type CreateProjectInput = Pick<Project, 'name'> &
+  Partial<Pick<Project, 'description' | 'startDate' | 'dueDate' | 'color' | 'category'>> &
+  { memberIds?: string[] };
+
 export interface Task {
   id: string;
   projectId: string;
@@ -71,7 +75,9 @@ export type NotificationType =
   | 'project_invited'
   | 'deadline_approaching'
   | 'comment_added'
-  | 'status_changed';
+  | 'status_changed'
+  | 'project_role_changed'
+  | 'ownership_transferred';
 
 export interface Notification {
   id: string;
@@ -89,6 +95,8 @@ export interface Activity {
   userId: string;
   projectId?: string;
   taskId?: string;
+  targetId?: string;
+  targetType?: 'member' | 'project' | 'task';
   action: string;
   details: string;
   createdAt: string;
@@ -110,12 +118,30 @@ export interface DashboardStats {
   priorityDistribution: { priority: TaskPriority; count: number }[];
 }
 
+export interface DatabaseStatus {
+  isMongoConnected: boolean;
+  mode: string;
+  counts: {
+    users: number;
+    projects: number;
+    tasks: number;
+    comments: number;
+    notifications: number;
+    activities: number;
+  };
+}
+
 export interface TaskFilterOptions {
   search?: string;
   projectId?: string;
   status?: TaskStatus | 'all';
   priority?: TaskPriority | 'all';
   assignedTo?: string | 'all';
+  dueDateFilter?: TaskDueDateFilter;
+  dueDateFrom?: string;
+  dueDateTo?: string;
   sortBy?: 'dueDate' | 'priority' | 'createdAt' | 'title';
   sortOrder?: 'asc' | 'desc';
 }
+
+export type TaskDueDateFilter = 'overdue' | 'today' | 'this_week' | 'none' | 'custom';

@@ -25,12 +25,12 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 
 export const api = {
   get: <T>(url: string) => request<T>(url, { method: 'GET' }),
-  post: <T>(url: string, body?: any) =>
+  post: <T>(url: string, body?: unknown) =>
     request<T>(url, {
       method: 'POST',
       body: body ? JSON.stringify(body) : undefined,
     }),
-  patch: <T>(url: string, body?: any) =>
+  patch: <T>(url: string, body?: unknown) =>
     request<T>(url, {
       method: 'PATCH',
       body: body ? JSON.stringify(body) : undefined,

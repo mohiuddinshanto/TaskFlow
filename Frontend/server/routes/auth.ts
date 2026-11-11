@@ -3,11 +3,17 @@ import { database } from '../db';
 import { authenticate, AuthenticatedRequest } from '../auth';
 import { fromNodeHeaders } from 'better-auth/node';
 import { auth } from '../../src/lib/auth';
+import { User } from '../../src/types/index';
 
 export const authRouter = Router();
 
+// GET /api/auth/me - return the authenticated user's safe profile
+authRouter.get('/me', authenticate, (req: AuthenticatedRequest, res: Response) => {
+  res.json(req.user);
+});
+
 // GET all users (for team assignees and project members)
-authRouter.get('/users', authenticate, (req: AuthenticatedRequest, res: Response) => {
+authRouter.get('/users', authenticate, (_req: AuthenticatedRequest, res: Response) => {
   const users = database.getUsers().map((u) => {
     const { passwordHash, ...safe } = u;
     return safe;
@@ -23,7 +29,7 @@ authRouter.patch('/profile', authenticate, (req: AuthenticatedRequest, res: Resp
   }
 
   const { name, jobTitle, department, avatar } = req.body;
-  const updates: any = {};
+  const updates: Partial<Pick<User, 'name' | 'jobTitle' | 'department' | 'avatar'>> = {};
   if (name && typeof name === 'string') updates.name = name.trim();
   if (jobTitle && typeof jobTitle === 'string') updates.jobTitle = jobTitle.trim();
   if (department && typeof department === 'string') updates.department = department.trim();

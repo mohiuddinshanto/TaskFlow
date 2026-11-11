@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Plus, Calendar, User, Tag } from 'lucide-react';
+import { X, Plus } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { TaskPriority, TaskStatus } from '../types/index';
 import toast from 'react-hot-toast';

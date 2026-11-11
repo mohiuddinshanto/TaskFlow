@@ -3,6 +3,7 @@ import toast from 'react-hot-toast';
 import { api } from '../lib/api';
 import {
   User,
+  CreateProjectInput,
   Project,
   Task,
   Comment,
@@ -13,6 +14,7 @@ import {
 } from '../types/index';
 import { countUnreadNotifications } from '../utils/taskCalculations';
 import { authClient } from '../lib/auth-client';
+import { errorMessage } from '../lib/errors';
 
 export type ActiveView = 'dashboard' | 'projects' | 'board' | 'tasks' | 'team' | 'profile' | 'settings' | 'notifications';
 
@@ -63,11 +65,13 @@ interface TaskFlowState {
   isLoadingProjects: boolean;
   fetchProjects: () => Promise<void>;
   selectProject: (id: string | null) => void;
-  createProject: (data: any) => Promise<Project | null>;
+  createProject: (data: CreateProjectInput) => Promise<Project | null>;
   updateProject: (id: string, data: Partial<Project>) => Promise<boolean>;
   deleteProject: (id: string) => Promise<boolean>;
-  addProjectMember: (projectId: string, userId: string, role?: string) => Promise<boolean>;
+  addProjectMember: (projectId: string, userId: string) => Promise<boolean>;
   removeProjectMember: (projectId: string, userId: string) => Promise<boolean>;
+  changeProjectMemberRole: (projectId: string, userId: string, role: 'admin' | 'member') => Promise<boolean>;
+  transferProjectOwnership: (projectId: string, userId: string) => Promise<boolean>;
 
   // Tasks State
   tasks: Task[];
@@ -194,8 +198,8 @@ export const useStore = create<TaskFlowState>((set, get) => ({
       get().fetchNotifications();
       get().fetchDashboardStats();
       return true;
-    } catch (err: any) {
-      toast.error(err.message || 'Login failed');
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, 'Login failed'));
       return false;
     }
   },
@@ -212,8 +216,8 @@ export const useStore = create<TaskFlowState>((set, get) => ({
       get().fetchNotifications();
       get().fetchDashboardStats();
       return true;
-    } catch (err: any) {
-      toast.error(err.message || 'Registration failed');
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, 'Registration failed'));
       return false;
     }
   },
@@ -240,8 +244,8 @@ export const useStore = create<TaskFlowState>((set, get) => ({
       toast.success('Profile updated');
       get().fetchAllUsers();
       return true;
-    } catch (err: any) {
-      toast.error(err.message || 'Could not update profile');
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, 'Could not update profile'));
       return false;
     }
   },
@@ -274,7 +278,7 @@ export const useStore = create<TaskFlowState>((set, get) => ({
       if (currentActive) {
         get().fetchTasks(currentActive);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       set({ isLoadingProjects: false });
     }
   },
@@ -299,8 +303,8 @@ export const useStore = create<TaskFlowState>((set, get) => ({
       get().fetchTasks(created.id);
       get().fetchDashboardStats();
       return created;
-    } catch (err: any) {
-      toast.error(err.message || 'Could not create project');
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, 'Could not create project'));
       return null;
     }
   },
@@ -314,8 +318,8 @@ export const useStore = create<TaskFlowState>((set, get) => ({
       toast.success('Project details saved');
       get().fetchDashboardStats();
       return true;
-    } catch (err: any) {
-      toast.error(err.message || 'Could not update project');
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, 'Could not update project'));
       return false;
     }
   },
@@ -334,22 +338,22 @@ export const useStore = create<TaskFlowState>((set, get) => ({
       toast.success('Project deleted');
       get().fetchDashboardStats();
       return true;
-    } catch (err: any) {
-      toast.error(err.message || 'Could not delete project');
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, 'Could not delete project'));
       return false;
     }
   },
 
-  addProjectMember: async (projectId, userId, role = 'member') => {
+  addProjectMember: async (projectId, userId) => {
     try {
-      const updated = await api.post<Project>(`/api/projects/${projectId}/members`, { userId, role });
+      const updated = await api.post<Project>(`/api/projects/${projectId}/members`, { userId });
       set((state) => ({
         projects: state.projects.map((p) => (p.id === projectId ? updated : p)),
       }));
       toast.success('Team member added to project');
       return true;
-    } catch (err: any) {
-      toast.error(err.message || 'Could not add team member');
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, 'Could not add team member'));
       return false;
     }
   },
@@ -362,8 +366,33 @@ export const useStore = create<TaskFlowState>((set, get) => ({
       }));
       toast.success('Team member removed');
       return true;
-    } catch (err: any) {
-      toast.error(err.message || 'Could not remove member');
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, 'Could not remove member'));
+      return false;
+    }
+  },
+
+  changeProjectMemberRole: async (projectId, userId, role) => {
+    try {
+      const updated = await api.patch<Project>(`/api/projects/${projectId}/members/${userId}/role`, { role });
+      set((state) => ({ projects: state.projects.map((project) => project.id === projectId ? updated : project) }));
+      toast.success('Project member role updated');
+      return true;
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, 'Could not change member role'));
+      return false;
+    }
+  },
+
+  transferProjectOwnership: async (projectId, userId) => {
+    try {
+      const updated = await api.post<Project>(`/api/projects/${projectId}/transfer-ownership`, { userId });
+      set((state) => ({ projects: state.projects.map((project) => project.id === projectId ? updated : project) }));
+      toast.success('Project ownership transferred');
+      get().fetchDashboardStats();
+      return true;
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, 'Could not transfer project ownership'));
       return false;
     }
   },
@@ -390,8 +419,8 @@ export const useStore = create<TaskFlowState>((set, get) => ({
       toast.success(`Task "${created.title}" created`);
       get().fetchDashboardStats();
       return created;
-    } catch (err: any) {
-      toast.error(err.message || 'Could not create task');
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, 'Could not create task'));
       return null;
     }
   },
@@ -405,8 +434,8 @@ export const useStore = create<TaskFlowState>((set, get) => ({
       toast.success('Task updated');
       get().fetchDashboardStats();
       return true;
-    } catch (err: any) {
-      toast.error(err.message || 'Could not update task');
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, 'Could not update task'));
       return false;
     }
   },
@@ -424,10 +453,10 @@ export const useStore = create<TaskFlowState>((set, get) => ({
       await api.patch(`/api/tasks/${id}`, { status: newStatus, order: newOrder });
       toast.success(`Moved to ${newStatus.replace('_', ' ')}`);
       get().fetchDashboardStats();
-    } catch (err: any) {
+    } catch (err: unknown) {
       // Revert on failure
       set({ tasks: previousTasks });
-      toast.error(err.message || 'Failed to update task position');
+      toast.error(errorMessage(err, 'Failed to update task position'));
     }
   },
 
@@ -441,8 +470,8 @@ export const useStore = create<TaskFlowState>((set, get) => ({
       toast.success('Task deleted');
       get().fetchDashboardStats();
       return true;
-    } catch (err: any) {
-      toast.error(err.message || 'Could not delete task');
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, 'Could not delete task'));
       return false;
     }
   },
@@ -467,8 +496,8 @@ export const useStore = create<TaskFlowState>((set, get) => ({
       set((state) => ({ comments: [...state.comments, newComment] }));
       toast.success('Comment posted');
       return newComment;
-    } catch (err: any) {
-      toast.error(err.message || 'Could not post comment');
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, 'Could not post comment'));
       return null;
     }
   },
@@ -479,8 +508,8 @@ export const useStore = create<TaskFlowState>((set, get) => ({
       set((state) => ({ comments: state.comments.filter((c) => c.id !== id) }));
       toast.success('Comment deleted');
       return true;
-    } catch (err: any) {
-      toast.error(err.message || 'Could not delete comment');
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, 'Could not delete comment'));
       return false;
     }
   },

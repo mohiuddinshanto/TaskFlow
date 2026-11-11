@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
-import { UserCheck, Shield, Key, Save, Lock, Mail, Briefcase } from 'lucide-react';
+import { UserCheck, Key, Save, Lock } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { Avatar } from './Avatar';
 import { api } from '../lib/api';
 import toast from 'react-hot-toast';
+import { errorMessage } from '../lib/errors';
 
 export const ProfileView: React.FC = () => {
   const { currentUser, updateProfile } = useStore();
@@ -44,8 +45,8 @@ export const ProfileView: React.FC = () => {
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
-    } catch (err: any) {
-      toast.error(err.message || 'Could not change password');
+    } catch (err: unknown) {
+      toast.error(errorMessage(err, 'Could not change password'));
     } finally {
       setIsChangingPass(false);
     }

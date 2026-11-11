@@ -1,17 +1,15 @@
 // server.ts
+import "dotenv/config";
 import express from "express";
-import path2 from "path";
+import path from "path";
 import cookieParser from "cookie-parser";
-import dotenv from "dotenv";
 
 // server/db.ts
-import fs from "fs";
-import path from "path";
-import bcrypt from "bcryptjs";
-import { randomBytes } from "crypto";
+import "dotenv/config";
 import { MongoClient } from "mongodb";
-var DATA_DIR = path.resolve(process.env.TASKFLOW_DATA_DIR || path.join(process.cwd(), "data"));
-var DB_FILE = path.join(DATA_DIR, "database.json");
+function stripMongoIds(documents) {
+  return documents.map(({ _id: _mongoId, ...document }) => document);
+}
 var db = {
   schemaVersion: 2,
   users: [],
@@ -21,41 +19,47 @@ var db = {
   notifications: [],
   activities: []
 };
-var mongoClient = null;
+var mongoUri = process.env.MONGODB_URI;
+var mongoDbName = process.env.MONGODB_DB_NAME;
+var mongoClient = mongoUri && process.env.TASKFLOW_DISABLE_MONGODB !== "true" ? new MongoClient(mongoUri, { serverSelectionTimeoutMS: 5e3, connectTimeoutMS: 5e3 }) : null;
 var mongoDb = null;
 var isMongoConnected = false;
-function ensureDirectoryExists(dirPath) {
-  if (!fs.existsSync(dirPath)) {
-    fs.mkdirSync(dirPath, { recursive: true });
-  }
+var mongoConnectPromise = null;
+var pendingMongoWrites = [];
+function persistMongoWrite(write) {
+  pendingMongoWrites.push(write);
+  void write.catch(() => {
+  });
 }
-function persistToDisk() {
-  try {
-    ensureDirectoryExists(DATA_DIR);
-    const tempFile = `${DB_FILE}.tmp`;
-    fs.writeFileSync(tempFile, JSON.stringify(db, null, 2), "utf-8");
-    fs.renameSync(tempFile, DB_FILE);
-  } catch (err) {
-    console.error("[Database] Failed to persist database to disk:", err);
+async function flushMongoWrites() {
+  while (pendingMongoWrites.length > 0) {
+    const writes = pendingMongoWrites.splice(0);
+    const results = await Promise.allSettled(writes);
+    if (results.some((result) => result.status === "rejected")) {
+      throw new Error("MongoDB write failed.");
+    }
   }
 }
 async function connectMongo() {
-  const uri2 = process.env.MONGODB_URI;
-  if (!uri2) {
-    console.log("[Database] MONGODB_URI not configured. Operating in high-speed persistent store mode (data/database.json).");
+  if (process.env.TASKFLOW_DISABLE_MONGODB === "true") {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("MongoDB cannot be disabled in production.");
+    }
+    console.log("[Database] MongoDB disabled for this run (isolated development/test mode).");
     return false;
   }
+  if (!mongoUri) {
+    throw new Error("MONGODB_URI is required. TaskFlow stores application data in MongoDB.");
+  }
+  if (!mongoDbName) throw new Error("MONGODB_DB_NAME is required. Set the intended TaskFlow database name.");
   try {
     console.log("[Database] Connecting to MongoDB via Native Driver...");
-    mongoClient = new MongoClient(uri2, {
-      serverSelectionTimeoutMS: 4e3,
-      connectTimeoutMS: 4e3
-    });
-    await mongoClient.connect();
-    const dbName2 = process.env.MONGODB_DB_NAME || "taskflow";
-    mongoDb = mongoClient.db(dbName2);
+    mongoConnectPromise ??= mongoClient.connect().then(() => void 0);
+    await mongoConnectPromise;
+    mongoDb = mongoClient.db(mongoDbName);
+    await mongoDb.command({ ping: 1 });
     isMongoConnected = true;
-    console.log(`[Database] MongoDB Native Driver successfully connected to database "${dbName2}"!`);
+    console.log(`[Database] MongoDB Native Driver connected to database "${mongoDbName}".`);
     try {
       await mongoDb.collection("users").createIndex({ email: 1 }, { unique: true });
       await mongoDb.collection("projects").createIndex({ ownerId: 1 });
@@ -64,59 +68,54 @@ async function connectMongo() {
       await mongoDb.collection("comments").createIndex({ taskId: 1 });
       await mongoDb.collection("notifications").createIndex({ recipientId: 1, isRead: 1 });
     } catch (idxErr) {
-      console.warn("[Database] Index verification warning:", idxErr);
+      const indexError = idxErr;
+      const indexMessage = (indexError.message || "").replace(/mongodb(?:\+srv)?:\/\/[^\s]+/gi, "mongodb://[REDACTED]");
+      console.warn("[Database] Index verification warning:", {
+        name: indexError.name || "Error",
+        code: indexError.code || "unknown",
+        message: indexMessage.slice(0, 200)
+      });
     }
     const schemaMetadata = await mongoDb.collection("metadata").findOne({ id: "taskflow" });
-    const userCount = await mongoDb.collection("users").countDocuments();
-    if (userCount > 0) {
-      const users = await mongoDb.collection("users").find({}).toArray();
-      const projects = await mongoDb.collection("projects").find({}).toArray();
-      const tasks = await mongoDb.collection("tasks").find({}).toArray();
-      const comments = await mongoDb.collection("comments").find({}).toArray();
-      const notifications = await mongoDb.collection("notifications").find({}).toArray();
-      const activities = await mongoDb.collection("activities").find({}).toArray();
-      db = {
-        schemaVersion: typeof schemaMetadata?.schemaVersion === "number" ? schemaMetadata.schemaVersion : 0,
-        users,
-        projects,
-        tasks,
-        comments,
-        notifications,
-        activities
-      };
-      migrateDatabaseSchema();
-      if (db.schemaVersion >= 2) {
-        await Promise.all(db.users.map((user) => mongoDb.collection("users").updateOne({ id: user.id }, { $set: user })));
-        await mongoDb.collection("metadata").updateOne({ id: "taskflow" }, { $set: { schemaVersion: 2 } }, { upsert: true });
-      }
-      persistToDisk();
-      console.log(`[Database] Hydrated cache with ${users.length} users, ${projects.length} projects, and ${tasks.length} tasks from MongoDB.`);
-    } else {
-      console.log("[Database] MongoDB collections are empty. Populating with initial seed dataset...");
-      if (db.users.length > 0) {
-        await mongoDb.collection("users").insertMany(db.users);
-        await mongoDb.collection("projects").insertMany(db.projects);
-        await mongoDb.collection("tasks").insertMany(db.tasks);
-        await mongoDb.collection("comments").insertMany(db.comments);
-        await mongoDb.collection("notifications").insertMany(db.notifications);
-        await mongoDb.collection("activities").insertMany(db.activities);
-        await mongoDb.collection("metadata").updateOne({ id: "taskflow" }, { $set: { schemaVersion: 2 } }, { upsert: true });
-        console.log("[Database] Seed dataset pushed to MongoDB successfully.");
-      }
+    const [users, projects, tasks, comments, notifications, activities] = await Promise.all([
+      mongoDb.collection("users").find({}).toArray(),
+      mongoDb.collection("projects").find({}).toArray(),
+      mongoDb.collection("tasks").find({}).toArray(),
+      mongoDb.collection("comments").find({}).toArray(),
+      mongoDb.collection("notifications").find({}).toArray(),
+      mongoDb.collection("activities").find({}).toArray()
+    ]).then(([u, p, t, c, n, a]) => [stripMongoIds(u), stripMongoIds(p), stripMongoIds(t), stripMongoIds(c), stripMongoIds(n), stripMongoIds(a)]);
+    db = {
+      schemaVersion: typeof schemaMetadata?.schemaVersion === "number" ? schemaMetadata.schemaVersion : 2,
+      users,
+      projects,
+      tasks,
+      comments,
+      notifications,
+      activities
+    };
+    if (db.schemaVersion >= 2) {
+      await Promise.all(db.users.map((user) => mongoDb.collection("users").updateOne({ id: user.id }, { $set: user })));
     }
+    await mongoDb.collection("metadata").updateOne({ id: "taskflow" }, { $set: { schemaVersion: 2 } }, { upsert: true });
+    console.log(`[Database] Hydrated cache with ${users.length} users, ${projects.length} projects, and ${tasks.length} tasks from MongoDB.`);
     return true;
   } catch (err) {
-    console.warn("[Database] MongoDB connection attempt finished with fallback:", err.message || err);
-    console.log("[Database] Active persistence: Local file engine with atomic writes.");
+    const error = err;
+    const message = (error.message || "").replace(/mongodb(?:\+srv)?:\/\/[^\s]+/gi, "mongodb://[REDACTED]");
+    console.error("[Database] MongoDB connection failed; refusing to start with local fallback:", {
+      name: error.name || "Error",
+      code: error.code || "unknown",
+      message: message.slice(0, 300)
+    });
     isMongoConnected = false;
-    return false;
+    throw new Error(`MongoDB connection failed (${error.name || "Error"}; code ${error.code || "unknown"}). Check Atlas network access, DNS, TLS, and authentication. ${message.slice(0, 200)}`);
   }
 }
 function getDatabaseStatus() {
   return {
     isMongoConnected,
-    mode: isMongoConnected ? "MongoDB Native Driver" : "Embedded Persistent Store",
-    dataFile: DB_FILE,
+    mode: isMongoConnected ? "MongoDB Native Driver" : "MongoDB disabled (isolated test mode)",
     counts: {
       users: db.users.length,
       projects: db.projects.length,
@@ -128,467 +127,37 @@ function getDatabaseStatus() {
   };
 }
 async function initDatabase() {
-  ensureDirectoryExists(DATA_DIR);
-  if (fs.existsSync(DB_FILE)) {
-    try {
-      const content = fs.readFileSync(DB_FILE, "utf-8");
-      db = JSON.parse(content);
-      migrateDatabaseSchema();
-      console.log("[Database] Loaded existing database records from disk:", {
-        users: db.users.length,
-        projects: db.projects.length,
-        tasks: db.tasks.length
-      });
-    } catch (err) {
-      console.warn("[Database] Could not read existing database, re-seeding...", err);
-      seedInitialData();
-    }
-  } else {
-    seedInitialData();
-  }
+  db = { schemaVersion: 2, users: [], projects: [], tasks: [], comments: [], notifications: [], activities: [] };
   await connectMongo();
 }
-function seedInitialData() {
-  const seedPassword = process.env.TASKFLOW_SEED_PASSWORD || randomBytes(32).toString("base64url");
-  const defaultPasswordHash = bcrypt.hashSync(seedPassword, 10);
-  const now = /* @__PURE__ */ new Date();
-  const pastDays = (d) => new Date(now.getTime() - d * 864e5).toISOString();
-  const futureDays = (d) => new Date(now.getTime() + d * 864e5).toISOString();
-  const users = [
-    {
-      id: "usr-1",
-      name: "Alex Morgan",
-      email: "alex@taskflow.dev",
-      passwordHash: defaultPasswordHash,
-      role: "admin",
-      jobTitle: "Principal Engineer & Admin",
-      department: "Engineering",
-      avatar: "/src/assets/images/avatar_alex_lead_1794315026659.jpg",
-      createdAt: pastDays(30),
-      updatedAt: pastDays(1)
-    },
-    {
-      id: "usr-2",
-      name: "Sarah Connor",
-      email: "sarah@taskflow.dev",
-      passwordHash: defaultPasswordHash,
-      role: "project_owner",
-      jobTitle: "Staff Product Manager",
-      department: "Product",
-      avatar: "/src/assets/images/avatar_sarah_pm_1794315026386.jpg",
-      createdAt: pastDays(28),
-      updatedAt: pastDays(2)
-    },
-    {
-      id: "usr-3",
-      name: "Michael Chen",
-      email: "michael@taskflow.dev",
-      passwordHash: defaultPasswordHash,
-      role: "member",
-      jobTitle: "Senior Frontend Developer",
-      department: "Engineering",
-      avatar: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80",
-      createdAt: pastDays(25),
-      updatedAt: pastDays(3)
-    },
-    {
-      id: "usr-4",
-      name: "Elena Rostova",
-      email: "elena@taskflow.dev",
-      passwordHash: defaultPasswordHash,
-      role: "member",
-      jobTitle: "UI/UX Design Lead",
-      department: "Design",
-      avatar: "https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150&auto=format&fit=crop&q=80",
-      createdAt: pastDays(20),
-      updatedAt: pastDays(5)
-    }
-  ];
-  const projects = [
-    {
-      id: "proj-1",
-      name: "TaskFlow SaaS Core Platform",
-      description: "Enterprise task orchestration engine, drag-and-drop Kanban board, real-time collaboration, and analytics reporting.",
-      ownerId: "usr-1",
-      members: [
-        { userId: "usr-1", role: "owner", joinedAt: pastDays(30) },
-        { userId: "usr-2", role: "member", joinedAt: pastDays(28) },
-        { userId: "usr-3", role: "member", joinedAt: pastDays(25) },
-        { userId: "usr-4", role: "member", joinedAt: pastDays(20) }
-      ],
-      startDate: pastDays(30),
-      dueDate: futureDays(20),
-      color: "#3B82F6",
-      // Blue
-      category: "Product Development",
-      createdAt: pastDays(30),
-      updatedAt: pastDays(1)
-    },
-    {
-      id: "proj-2",
-      name: "Mobile Touch & Responsive UX",
-      description: "Fluid viewport adaptation for tablet and mobile devices, swipe gesture cards, and responsive drawer navigation.",
-      ownerId: "usr-2",
-      members: [
-        { userId: "usr-2", role: "owner", joinedAt: pastDays(20) },
-        { userId: "usr-3", role: "member", joinedAt: pastDays(18) },
-        { userId: "usr-4", role: "member", joinedAt: pastDays(15) }
-      ],
-      startDate: pastDays(20),
-      dueDate: futureDays(12),
-      color: "#10B981",
-      // Emerald
-      category: "Mobile UX",
-      createdAt: pastDays(20),
-      updatedAt: pastDays(2)
-    },
-    {
-      id: "proj-3",
-      name: "Security & Access Control Audit",
-      description: "End-to-end audit for RBAC roles, JWT session handling, rate limiting, and password hashing standard.",
-      ownerId: "usr-1",
-      members: [
-        { userId: "usr-1", role: "owner", joinedAt: pastDays(14) },
-        { userId: "usr-2", role: "member", joinedAt: pastDays(10) }
-      ],
-      startDate: pastDays(14),
-      dueDate: pastDays(2),
-      // Overdue intentionally for stats demo
-      color: "#F59E0B",
-      // Amber
-      category: "Security",
-      createdAt: pastDays(14),
-      updatedAt: pastDays(3)
-    }
-  ];
-  const tasks = [
-    // Project 1 Tasks
-    {
-      id: "tsk-101",
-      projectId: "proj-1",
-      title: "Design interactive Kanban board columns",
-      description: "Build four Kanban columns (Todo, In Progress, Review, Completed) with responsive drop targets and visual feedback.",
-      status: "completed",
-      priority: "high",
-      assignedTo: "usr-3",
-      createdBy: "usr-1",
-      labels: ["frontend", "kanban", "ui"],
-      startDate: pastDays(15),
-      dueDate: pastDays(5),
-      order: 0,
-      estimatedHours: 12,
-      actualHours: 10,
-      createdAt: pastDays(15),
-      updatedAt: pastDays(5)
-    },
-    {
-      id: "tsk-102",
-      projectId: "proj-1",
-      title: "Build REST API endpoints for task CRUD",
-      description: "Implement Express routers for tasks with query filtering, pagination, and role-based permissions.",
-      status: "completed",
-      priority: "urgent",
-      assignedTo: "usr-1",
-      createdBy: "usr-1",
-      labels: ["backend", "api", "express"],
-      startDate: pastDays(12),
-      dueDate: pastDays(3),
-      order: 1,
-      estimatedHours: 8,
-      actualHours: 7,
-      createdAt: pastDays(12),
-      updatedAt: pastDays(3)
-    },
-    {
-      id: "tsk-103",
-      projectId: "proj-1",
-      title: "Implement drag-and-drop state synchronization",
-      description: "Update task column positions instantly in state and persist PATCH /api/tasks/:id payload to backend.",
-      status: "in_progress",
-      priority: "urgent",
-      assignedTo: "usr-3",
-      createdBy: "usr-2",
-      labels: ["frontend", "state", "dnd"],
-      startDate: pastDays(4),
-      dueDate: futureDays(2),
-      order: 0,
-      estimatedHours: 16,
-      actualHours: 8,
-      createdAt: pastDays(4),
-      updatedAt: pastDays(1)
-    },
-    {
-      id: "tsk-104",
-      projectId: "proj-1",
-      title: "Task comments and discussion thread",
-      description: "Allow team members to comment on tasks, edit comments, and view author timestamps.",
-      status: "review",
-      priority: "medium",
-      assignedTo: "usr-4",
-      createdBy: "usr-1",
-      labels: ["collaboration", "comments"],
-      startDate: pastDays(6),
-      dueDate: futureDays(4),
-      order: 0,
-      estimatedHours: 10,
-      actualHours: 9,
-      createdAt: pastDays(6),
-      updatedAt: pastDays(1)
-    },
-    {
-      id: "tsk-105",
-      projectId: "proj-1",
-      title: "In-app notification system with badge count",
-      description: "Notify users when tasks are assigned, deadlines approach, or comments are created.",
-      status: "todo",
-      priority: "high",
-      assignedTo: "usr-1",
-      createdBy: "usr-2",
-      labels: ["notifications", "backend"],
-      startDate: pastDays(2),
-      dueDate: futureDays(6),
-      order: 0,
-      estimatedHours: 14,
-      createdAt: pastDays(2),
-      updatedAt: pastDays(2)
-    },
-    {
-      id: "tsk-106",
-      projectId: "proj-1",
-      title: "Full dashboard analytics and metrics cards",
-      description: "Display completion statistics, overdue counts, upcoming deadlines, and activity logs.",
-      status: "in_progress",
-      priority: "high",
-      assignedTo: "usr-3",
-      createdBy: "usr-1",
-      labels: ["dashboard", "analytics"],
-      startDate: pastDays(3),
-      dueDate: futureDays(5),
-      order: 1,
-      estimatedHours: 12,
-      actualHours: 6,
-      createdAt: pastDays(3),
-      updatedAt: pastDays(1)
-    },
-    {
-      id: "tsk-107",
-      projectId: "proj-1",
-      title: "Implement Dark / Light mode with zero contrast flaws",
-      description: "Ensure all cards, modals, and typography adhere to Tailwind v4 custom dark variant.",
-      status: "completed",
-      priority: "medium",
-      assignedTo: "usr-4",
-      createdBy: "usr-3",
-      labels: ["theme", "css", "design"],
-      startDate: pastDays(8),
-      dueDate: pastDays(2),
-      order: 2,
-      estimatedHours: 6,
-      actualHours: 5,
-      createdAt: pastDays(8),
-      updatedAt: pastDays(2)
-    },
-    // Project 2 Tasks
-    {
-      id: "tsk-201",
-      projectId: "proj-2",
-      title: "Design mobile navigation drawer and bottom bar",
-      description: "Create responsive header and sidebar toggle for screens under 768px width.",
-      status: "in_progress",
-      priority: "high",
-      assignedTo: "usr-4",
-      createdBy: "usr-2",
-      labels: ["mobile", "responsive"],
-      startDate: pastDays(5),
-      dueDate: futureDays(3),
-      order: 0,
-      estimatedHours: 8,
-      createdAt: pastDays(5),
-      updatedAt: pastDays(1)
-    },
-    {
-      id: "tsk-202",
-      projectId: "proj-2",
-      title: "Test touch swipe gestures on Kanban columns",
-      description: "Provide horizontal scroll snap and tap-to-move dropdown for mobile devices.",
-      status: "todo",
-      priority: "medium",
-      assignedTo: "usr-3",
-      createdBy: "usr-2",
-      labels: ["mobile", "touch"],
-      startDate: pastDays(2),
-      dueDate: futureDays(8),
-      order: 0,
-      estimatedHours: 10,
-      createdAt: pastDays(2),
-      updatedAt: pastDays(2)
-    },
-    // Project 3 Tasks (Overdue item for testing stats)
-    {
-      id: "tsk-301",
-      projectId: "proj-3",
-      title: "Verify JWT expiration and refresh logic",
-      description: "Validate token lifespans and ensure secure cookie storage with SameSite flags.",
-      status: "todo",
-      priority: "urgent",
-      assignedTo: "usr-1",
-      createdBy: "usr-1",
-      labels: ["security", "auth"],
-      startDate: pastDays(10),
-      dueDate: pastDays(1),
-      // Overdue
-      order: 0,
-      estimatedHours: 6,
-      createdAt: pastDays(10),
-      updatedAt: pastDays(1)
-    }
-  ];
-  const comments = [
-    {
-      id: "com-1",
-      taskId: "tsk-103",
-      authorId: "usr-1",
-      content: "I verified the drag-and-drop backend route. The order and status attributes are correctly updated on PATCH.",
-      createdAt: pastDays(2),
-      updatedAt: pastDays(2)
-    },
-    {
-      id: "com-2",
-      taskId: "tsk-103",
-      authorId: "usr-3",
-      content: "Awesome! Adding smooth CSS transition cards so moving tasks feels snappy and responsive.",
-      createdAt: pastDays(1),
-      updatedAt: pastDays(1)
-    },
-    {
-      id: "com-3",
-      taskId: "tsk-104",
-      authorId: "usr-2",
-      content: "Make sure comment deletion is restricted to either the original author or workspace admins.",
-      createdAt: pastDays(3),
-      updatedAt: pastDays(3)
-    }
-  ];
-  const notifications = [
-    {
-      id: "notif-1",
-      recipientId: "usr-1",
-      type: "task_assigned",
-      message: 'You have been assigned to "In-app notification system with badge count"',
-      relatedProjectId: "proj-1",
-      relatedTaskId: "tsk-105",
-      isRead: false,
-      createdAt: pastDays(1)
-    },
-    {
-      id: "notif-2",
-      recipientId: "usr-1",
-      type: "deadline_approaching",
-      message: 'Task "Verify JWT expiration and refresh logic" is past its scheduled deadline.',
-      relatedProjectId: "proj-3",
-      relatedTaskId: "tsk-301",
-      isRead: false,
-      createdAt: pastDays(1)
-    },
-    {
-      id: "notif-3",
-      recipientId: "usr-1",
-      type: "comment_added",
-      message: 'Michael Chen commented on "Implement drag-and-drop state synchronization"',
-      relatedProjectId: "proj-1",
-      relatedTaskId: "tsk-103",
-      isRead: true,
-      createdAt: pastDays(2)
-    },
-    {
-      id: "notif-4",
-      recipientId: "usr-2",
-      type: "project_invited",
-      message: 'You were added as Project Owner to "Mobile Touch & Responsive UX"',
-      relatedProjectId: "proj-2",
-      isRead: false,
-      createdAt: pastDays(5)
-    }
-  ];
-  const activities = [
-    {
-      id: "act-1",
-      userId: "usr-1",
-      projectId: "proj-1",
-      taskId: "tsk-102",
-      action: "completed_task",
-      details: 'Completed task "Build REST API endpoints for task CRUD"',
-      createdAt: pastDays(3)
-    },
-    {
-      id: "act-2",
-      userId: "usr-3",
-      projectId: "proj-1",
-      taskId: "tsk-103",
-      action: "status_changed",
-      details: 'Moved task "Implement drag-and-drop state synchronization" to In Progress',
-      createdAt: pastDays(2)
-    },
-    {
-      id: "act-3",
-      userId: "usr-4",
-      projectId: "proj-1",
-      taskId: "tsk-107",
-      action: "completed_task",
-      details: 'Completed task "Implement Dark / Light mode with zero contrast flaws"',
-      createdAt: pastDays(2)
-    },
-    {
-      id: "act-4",
-      userId: "usr-1",
-      projectId: "proj-1",
-      action: "created_project",
-      details: 'Created project "TaskFlow SaaS Core Platform"',
-      createdAt: pastDays(30)
-    }
-  ];
-  db = {
-    schemaVersion: 2,
-    users,
-    projects,
-    tasks,
-    comments,
-    notifications,
-    activities
-  };
-  persistToDisk();
-  console.log("[Database] Database initialized with seed data successfully.");
+function getMongoClient() {
+  return mongoClient;
 }
-function migrateDatabaseSchema() {
-  if (Number.isInteger(db.schemaVersion) && db.schemaVersion >= 2) return;
-  const legacyAccounts = db.users.filter((u) => ["alex@taskflow.dev", "sarah@taskflow.dev", "michael@taskflow.dev", "elena@taskflow.dev"].includes(u.email));
-  for (const user of legacyAccounts) {
-    const replacementPassword = process.env.TASKFLOW_SEED_PASSWORD || randomBytes(32).toString("base64url");
-    user.passwordHash = bcrypt.hashSync(replacementPassword, 10);
-  }
-  db.schemaVersion = 2;
-  persistToDisk();
+async function closeMongo() {
+  if (mongoClient) await mongoClient.close();
+  mongoDb = null;
+  isMongoConnected = false;
+  mongoConnectPromise = null;
 }
 var database = {
   // Users
   getUsers: () => db.users,
   getUserById: (id) => db.users.find((u) => u.id === id),
   getUserByEmail: (email) => db.users.find((u) => u.email.toLowerCase() === email.toLowerCase()),
-  createUser: (user) => {
+  createUser: async (user) => {
     db.users.push(user);
-    persistToDisk();
     if (isMongoConnected && mongoDb) {
-      mongoDb.collection("users").insertOne({ ...user }).catch(console.error);
+      persistMongoWrite(mongoDb.collection("users").insertOne({ ...user }));
     }
+    await flushMongoWrites();
     return user;
   },
   updateUser: (id, updates) => {
     const index = db.users.findIndex((u) => u.id === id);
     if (index === -1) return null;
     db.users[index] = { ...db.users[index], ...updates, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
-    persistToDisk();
     if (isMongoConnected && mongoDb) {
-      mongoDb.collection("users").updateOne({ id }, { $set: db.users[index] }).catch(console.error);
+      persistMongoWrite(mongoDb.collection("users").updateOne({ id }, { $set: db.users[index] }));
     }
     return db.users[index];
   },
@@ -603,9 +172,8 @@ var database = {
       action: "created_project",
       details: `Created project "${project.name}"`
     });
-    persistToDisk();
     if (isMongoConnected && mongoDb) {
-      mongoDb.collection("projects").insertOne({ ...project }).catch(console.error);
+      persistMongoWrite(mongoDb.collection("projects").insertOne({ ...project }));
     }
     return project;
   },
@@ -621,9 +189,8 @@ var database = {
         details: `Updated project "${db.projects[index].name}"`
       });
     }
-    persistToDisk();
     if (isMongoConnected && mongoDb) {
-      mongoDb.collection("projects").updateOne({ id }, { $set: db.projects[index] }).catch(console.error);
+      persistMongoWrite(mongoDb.collection("projects").updateOne({ id }, { $set: db.projects[index] }));
     }
     return db.projects[index];
   },
@@ -643,13 +210,12 @@ var database = {
         details: `Deleted project "${proj.name}"`
       });
     }
-    persistToDisk();
     if (isMongoConnected && mongoDb) {
-      mongoDb.collection("projects").deleteOne({ id }).catch(console.error);
-      mongoDb.collection("tasks").deleteMany({ projectId: id }).catch(console.error);
-      mongoDb.collection("comments").deleteMany({ taskId: { $in: taskIds } }).catch(console.error);
-      mongoDb.collection("notifications").deleteMany({ $or: [{ relatedProjectId: id }, { relatedTaskId: { $in: taskIds } }] }).catch(console.error);
-      mongoDb.collection("activities").deleteMany({ projectId: id }).catch(console.error);
+      persistMongoWrite(mongoDb.collection("projects").deleteOne({ id }));
+      persistMongoWrite(mongoDb.collection("tasks").deleteMany({ projectId: id }));
+      persistMongoWrite(mongoDb.collection("comments").deleteMany({ taskId: { $in: taskIds } }));
+      persistMongoWrite(mongoDb.collection("notifications").deleteMany({ $or: [{ relatedProjectId: id }, { relatedTaskId: { $in: taskIds } }] }));
+      persistMongoWrite(mongoDb.collection("activities").deleteMany({ projectId: id }));
     }
     return true;
   },
@@ -677,9 +243,8 @@ var database = {
         relatedTaskId: task.id
       });
     }
-    persistToDisk();
     if (isMongoConnected && mongoDb) {
-      mongoDb.collection("tasks").insertOne({ ...task }).catch(console.error);
+      persistMongoWrite(mongoDb.collection("tasks").insertOne({ ...task }));
     }
     return task;
   },
@@ -715,9 +280,8 @@ var database = {
         relatedTaskId: id
       });
     }
-    persistToDisk();
     if (isMongoConnected && mongoDb) {
-      mongoDb.collection("tasks").updateOne({ id }, { $set: db.tasks[index] }).catch(console.error);
+      persistMongoWrite(mongoDb.collection("tasks").updateOne({ id }, { $set: db.tasks[index] }));
     }
     return db.tasks[index];
   },
@@ -734,12 +298,11 @@ var database = {
       action: "deleted_task",
       details: `Deleted task "${task.title}"`
     });
-    persistToDisk();
     if (isMongoConnected && mongoDb) {
-      mongoDb.collection("tasks").deleteOne({ id }).catch(console.error);
-      mongoDb.collection("comments").deleteMany({ taskId: id }).catch(console.error);
-      mongoDb.collection("notifications").deleteMany({ relatedTaskId: id }).catch(console.error);
-      mongoDb.collection("activities").deleteMany({ taskId: id }).catch(console.error);
+      persistMongoWrite(mongoDb.collection("tasks").deleteOne({ id }));
+      persistMongoWrite(mongoDb.collection("comments").deleteMany({ taskId: id }));
+      persistMongoWrite(mongoDb.collection("notifications").deleteMany({ relatedTaskId: id }));
+      persistMongoWrite(mongoDb.collection("activities").deleteMany({ taskId: id }));
     }
     return true;
   },
@@ -763,9 +326,8 @@ var database = {
         relatedTaskId: task.id
       });
     }
-    persistToDisk();
     if (isMongoConnected && mongoDb) {
-      mongoDb.collection("comments").insertOne({ ...newComment }).catch(console.error);
+      persistMongoWrite(mongoDb.collection("comments").insertOne({ ...newComment }));
     }
     return newComment;
   },
@@ -775,9 +337,8 @@ var database = {
     if (db.comments[index].authorId !== authorId) return null;
     db.comments[index].content = content;
     db.comments[index].updatedAt = (/* @__PURE__ */ new Date()).toISOString();
-    persistToDisk();
     if (isMongoConnected && mongoDb) {
-      mongoDb.collection("comments").updateOne({ id }, { $set: db.comments[index] }).catch(console.error);
+      persistMongoWrite(mongoDb.collection("comments").updateOne({ id }, { $set: db.comments[index] }));
     }
     return db.comments[index];
   },
@@ -786,9 +347,8 @@ var database = {
     if (!comment) return false;
     if (comment.authorId !== userId && !isAdmin) return false;
     db.comments = db.comments.filter((c) => c.id !== id);
-    persistToDisk();
     if (isMongoConnected && mongoDb) {
-      mongoDb.collection("comments").deleteOne({ id }).catch(console.error);
+      persistMongoWrite(mongoDb.collection("comments").deleteOne({ id }));
     }
     return true;
   },
@@ -802,9 +362,8 @@ var database = {
       createdAt: (/* @__PURE__ */ new Date()).toISOString()
     };
     db.notifications.push(newNotif);
-    persistToDisk();
     if (isMongoConnected && mongoDb) {
-      mongoDb.collection("notifications").insertOne({ ...newNotif }).catch(console.error);
+      persistMongoWrite(mongoDb.collection("notifications").insertOne({ ...newNotif }));
     }
     return newNotif;
   },
@@ -812,9 +371,8 @@ var database = {
     const notif = db.notifications.find((n) => n.id === id && n.recipientId === recipientId);
     if (!notif) return null;
     notif.isRead = true;
-    persistToDisk();
     if (isMongoConnected && mongoDb) {
-      mongoDb.collection("notifications").updateOne({ id }, { $set: { isRead: true } }).catch(console.error);
+      persistMongoWrite(mongoDb.collection("notifications").updateOne({ id }, { $set: { isRead: true } }));
     }
     return notif;
   },
@@ -824,9 +382,8 @@ var database = {
         notif.isRead = true;
       }
     }
-    persistToDisk();
     if (isMongoConnected && mongoDb) {
-      mongoDb.collection("notifications").updateMany({ recipientId }, { $set: { isRead: true } }).catch(console.error);
+      persistMongoWrite(mongoDb.collection("notifications").updateMany({ recipientId }, { $set: { isRead: true } }));
     }
     return true;
   },
@@ -839,9 +396,8 @@ var database = {
       createdAt: (/* @__PURE__ */ new Date()).toISOString()
     };
     db.activities.push(newAct);
-    persistToDisk();
     if (isMongoConnected && mongoDb) {
-      mongoDb.collection("activities").insertOne({ ...newAct }).catch(console.error);
+      persistMongoWrite(mongoDb.collection("activities").insertOne({ ...newAct }));
     }
     return newAct;
   }
@@ -854,13 +410,12 @@ import { Router } from "express";
 import { fromNodeHeaders } from "better-auth/node";
 
 // src/lib/auth.ts
+import "dotenv/config";
 import { betterAuth } from "better-auth";
 import { mongodbAdapter } from "@better-auth/mongo-adapter";
-import { MongoClient as MongoClient2 } from "mongodb";
-import { randomBytes as randomBytes2 } from "node:crypto";
-var uri = process.env.MONGODB_URI;
-var client = uri ? new MongoClient2(uri) : null;
-var dbName = process.env.MONGODB_DB_NAME || "taskflow";
+import { randomBytes } from "node:crypto";
+var client = getMongoClient();
+var dbName = process.env.MONGODB_DB_NAME;
 var db2 = client?.db(dbName);
 if (!process.env.BETTER_AUTH_SECRET && !process.env.AUTH_SECRET) {
   throw new Error("Set BETTER_AUTH_SECRET (or AUTH_SECRET) in the environment before starting the server.");
@@ -877,7 +432,7 @@ var auth = betterAuth({
         after: async (user) => {
           const existing = database.getUserById(user.id) || database.getUserByEmail(user.email);
           if (!existing) {
-            database.createUser({
+            await database.createUser({
               id: user.id,
               name: user.name,
               email: user.email,
@@ -887,7 +442,7 @@ var auth = betterAuth({
               avatar: user.image || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(user.name)}`,
               createdAt: user.createdAt.toISOString(),
               updatedAt: user.updatedAt.toISOString(),
-              passwordHash: randomBytes2(32).toString("hex")
+              passwordHash: randomBytes(32).toString("hex")
             });
           } else if (existing.name !== user.name || existing.id !== user.id) {
             database.updateUser(existing.id, { name: user.name });
@@ -898,7 +453,8 @@ var auth = betterAuth({
   }
 });
 async function connectAuthMongo() {
-  if (client) await client.connect();
+  if (!client) return;
+  if (!dbName) throw new Error("MONGODB_DB_NAME is required for authentication storage.");
 }
 
 // server/auth.ts
@@ -930,7 +486,10 @@ async function authenticate(req, res, next) {
 // server/routes/auth.ts
 import { fromNodeHeaders as fromNodeHeaders2 } from "better-auth/node";
 var authRouter = Router();
-authRouter.get("/users", authenticate, (req, res) => {
+authRouter.get("/me", authenticate, (req, res) => {
+  res.json(req.user);
+});
+authRouter.get("/users", authenticate, (_req, res) => {
   const users = database.getUsers().map((u) => {
     const { passwordHash, ...safe } = u;
     return safe;
@@ -975,6 +534,69 @@ authRouter.patch("/password", authenticate, async (req, res) => {
 
 // server/routes/projects.ts
 import { Router as Router2 } from "express";
+
+// server/projectPermissions.ts
+function getProjectMemberRole(project, userId) {
+  if (project.ownerId === userId) return "owner";
+  return project.members.find((member) => member.userId === userId)?.role;
+}
+function hasProjectAccess(project, user) {
+  return user.role === "admin" || getProjectMemberRole(project, user.id) !== void 0;
+}
+function canManageProjectMembers(project, user) {
+  return user.role === "admin" || getProjectMemberRole(project, user.id) === "owner" || getProjectMemberRole(project, user.id) === "admin";
+}
+function canChangeProjectRoles(project, user) {
+  return project.ownerId === user.id;
+}
+function canTransferProjectOwnership(project, user) {
+  return project.ownerId === user.id;
+}
+function prepareOwnershipTransfer(project, targetUserId) {
+  const owners = project.members.filter((member) => member.role === "owner");
+  if (owners.length !== 1 || owners[0]?.userId !== project.ownerId) return null;
+  if (targetUserId === project.ownerId || project.members.filter((member) => member.userId === targetUserId).length !== 1) return null;
+  return {
+    ...project,
+    ownerId: targetUserId,
+    members: project.members.map((member) => {
+      if (member.userId === project.ownerId) return { ...member, role: "admin" };
+      if (member.userId === targetUserId) return { ...member, role: "owner" };
+      return member;
+    })
+  };
+}
+function canRemoveProjectMember(project, user, targetUserId) {
+  if (targetUserId === project.ownerId) return false;
+  if (user.role === "admin" || project.ownerId === user.id) return true;
+  return getProjectMemberRole(project, user.id) === "admin" && getProjectMemberRole(project, targetUserId) === "member";
+}
+function canManageTask(project, user) {
+  return user.role === "admin" || getProjectMemberRole(project, user.id) === "owner" || getProjectMemberRole(project, user.id) === "admin";
+}
+function canEditTask(project, task, user) {
+  return canManageTask(project, user) || task.createdBy === user.id || task.assignedTo === user.id;
+}
+var FULL_TASK_EDIT_FIELDS = /* @__PURE__ */ new Set([
+  "title",
+  "description",
+  "priority",
+  "assignedTo",
+  "labels",
+  "startDate",
+  "dueDate",
+  "estimatedHours",
+  "actualHours"
+]);
+function getForbiddenTaskEditFields(updates, canFullEdit) {
+  if (canFullEdit) return [];
+  return Object.keys(updates).filter((field) => FULL_TASK_EDIT_FIELDS.has(field));
+}
+function canDeleteTask(project, task, user) {
+  return user.role === "admin" || project.ownerId === user.id || task.createdBy === user.id;
+}
+
+// server/routes/projects.ts
 var projectsRouter = Router2();
 projectsRouter.get("/", authenticate, (req, res) => {
   const user = req.user;
@@ -1133,17 +755,21 @@ projectsRouter.post("/:id/members", authenticate, (req, res) => {
     res.status(404).json({ error: "Project not found" });
     return;
   }
-  if (user.role !== "admin" && project.ownerId !== user.id) {
-    res.status(403).json({ error: "Only the project owner or an administrator can add members." });
+  if (!canManageProjectMembers(project, user)) {
+    res.status(403).json({ error: "Only the project owner, a project Admin, or a platform administrator can add members." });
     return;
   }
-  const { userId, role } = req.body;
+  const { userId } = req.body;
   if (!userId || !database.getUserById(userId)) {
     res.status(400).json({ error: "Valid user ID is required." });
     return;
   }
   if (project.members.some((m) => m.userId === userId)) {
     res.status(400).json({ error: "User is already a member of this project." });
+    return;
+  }
+  if (req.body.role !== void 0 && req.body.role !== "member") {
+    res.status(400).json({ error: "New members must be added as Member; only the Owner can change roles." });
     return;
   }
   const updatedMembers = [
@@ -1170,16 +796,133 @@ projectsRouter.delete("/:id/members/:userId", authenticate, (req, res) => {
     res.status(404).json({ error: "Project not found" });
     return;
   }
-  if (user.role !== "admin" && project.ownerId !== user.id) {
-    res.status(403).json({ error: "Only the project owner or an administrator can remove members." });
+  if (!canManageProjectMembers(project, user)) {
+    res.status(403).json({ error: "Only the project owner, a project Admin, or a platform administrator can remove members." });
     return;
   }
   if (req.params.userId === project.ownerId) {
     res.status(400).json({ error: "Cannot remove the primary project owner." });
     return;
   }
+  if (!canRemoveProjectMember(project, user, req.params.userId)) {
+    res.status(403).json({ error: "Project Admins may remove Members, but only the Owner can remove an Admin." });
+    return;
+  }
   const updatedMembers = project.members.filter((m) => m.userId !== req.params.userId);
   const updated = database.updateProject(req.params.id, { members: updatedMembers }, user.id);
+  res.json(updated);
+});
+projectsRouter.patch("/:id/members/:userId/role", authenticate, (req, res) => {
+  const user = req.user;
+  const project = database.getProjectById(req.params.id);
+  if (!project) {
+    res.status(404).json({ error: "Project not found." });
+    return;
+  }
+  if (!canChangeProjectRoles(project, user)) {
+    res.status(403).json({ error: "Only the current project Owner can change member roles." });
+    return;
+  }
+  const { userId } = req.params;
+  const { role } = req.body;
+  if (userId === project.ownerId) {
+    res.status(400).json({ error: "The Owner role cannot be changed with this endpoint." });
+    return;
+  }
+  if (role !== "admin" && role !== "member") {
+    res.status(400).json({ error: "Role must be either admin or member." });
+    return;
+  }
+  const nextRole = role === "admin" ? "admin" : "member";
+  const target = project.members.find((member) => member.userId === userId);
+  if (!target) {
+    res.status(404).json({ error: "Project member not found." });
+    return;
+  }
+  if (target.role === "owner") {
+    res.status(409).json({ error: "Project ownership data is inconsistent; use the ownership transfer endpoint." });
+    return;
+  }
+  const previousRole = target.role;
+  const members = project.members.map((member) => member.userId === userId ? { ...member, role: nextRole } : member);
+  const updated = database.updateProject(project.id, { members }, user.id);
+  if (!updated) {
+    res.status(404).json({ error: "Project not found." });
+    return;
+  }
+  const targetUser = database.getUserById(userId);
+  database.createNotification({
+    recipientId: userId,
+    type: "project_role_changed",
+    message: `${user.name} changed your role in "${project.name}" from ${previousRole} to ${nextRole}.`,
+    relatedProjectId: project.id
+  });
+  database.logActivity({
+    userId: user.id,
+    projectId: project.id,
+    targetId: userId,
+    targetType: "member",
+    action: "project_member_role_changed",
+    details: `Changed ${targetUser?.name || userId}'s role from ${previousRole} to ${nextRole} in "${project.name}".`
+  });
+  res.json(updated);
+});
+projectsRouter.post("/:id/transfer-ownership", authenticate, (req, res) => {
+  const user = req.user;
+  const project = database.getProjectById(req.params.id);
+  if (!project) {
+    res.status(404).json({ error: "Project not found." });
+    return;
+  }
+  if (!canTransferProjectOwnership(project, user)) {
+    res.status(403).json({ error: "Only the current project Owner can transfer ownership." });
+    return;
+  }
+  const { userId } = req.body;
+  if (typeof userId !== "string" || userId.length === 0) {
+    res.status(400).json({ error: "A project member userId is required." });
+    return;
+  }
+  if (userId === project.ownerId) {
+    res.status(400).json({ error: "The project is already owned by this user." });
+    return;
+  }
+  const targetMember = project.members.find((member) => member.userId === userId);
+  if (!targetMember) {
+    res.status(404).json({ error: "Ownership can only be transferred to an existing project member." });
+    return;
+  }
+  const transferredProject = prepareOwnershipTransfer(project, userId);
+  if (!transferredProject) {
+    res.status(409).json({ error: "Project ownership data is inconsistent; ask an administrator to repair it." });
+    return;
+  }
+  const updated = database.updateProject(project.id, { ownerId: transferredProject.ownerId, members: transferredProject.members }, user.id);
+  if (!updated) {
+    res.status(404).json({ error: "Project not found." });
+    return;
+  }
+  const targetUser = database.getUserById(userId);
+  database.createNotification({
+    recipientId: user.id,
+    type: "ownership_transferred",
+    message: `You transferred ownership of "${project.name}" to ${targetUser?.name || userId}. You are now an Admin.`,
+    relatedProjectId: project.id
+  });
+  database.createNotification({
+    recipientId: userId,
+    type: "ownership_transferred",
+    message: `${user.name} transferred ownership of "${project.name}" to you.`,
+    relatedProjectId: project.id
+  });
+  database.logActivity({
+    userId: user.id,
+    projectId: project.id,
+    targetId: userId,
+    targetType: "member",
+    action: "project_ownership_transferred",
+    details: `Transferred ownership of "${project.name}" to ${targetUser?.name || userId}; previous Owner is now Admin.`
+  });
   res.json(updated);
 });
 
@@ -1190,7 +933,44 @@ import { Router as Router3 } from "express";
 function isTaskOverdue(task, referenceDate = /* @__PURE__ */ new Date()) {
   if (!task.dueDate || task.status === "completed") return false;
   const due = new Date(task.dueDate);
-  return due.getTime() < referenceDate.getTime();
+  const dueDay = Date.UTC(due.getUTCFullYear(), due.getUTCMonth(), due.getUTCDate());
+  const currentDay = Date.UTC(referenceDate.getUTCFullYear(), referenceDate.getUTCMonth(), referenceDate.getUTCDate());
+  return dueDay < currentDay;
+}
+function isValidDateOnly(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = /* @__PURE__ */ new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+function dueDateKey(value) {
+  if (!value) return void 0;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 10) : void 0;
+}
+function matchesDueDateFilter(task, filter, from, to, referenceDate = /* @__PURE__ */ new Date()) {
+  if (filter === "none") return !task.dueDate;
+  if (!task.dueDate) return false;
+  if (filter === "overdue") return isTaskOverdue(task, referenceDate);
+  const due = dueDateKey(task.dueDate);
+  if (!due) return false;
+  const today = referenceDate.toISOString().slice(0, 10);
+  if (filter === "today") return due === today;
+  if (filter === "this_week") {
+    const day = referenceDate.getUTCDay();
+    const mondayOffset = (day + 6) % 7;
+    const monday = new Date(Date.UTC(
+      referenceDate.getUTCFullYear(),
+      referenceDate.getUTCMonth(),
+      referenceDate.getUTCDate() - mondayOffset
+    )).toISOString().slice(0, 10);
+    const sunday = new Date(Date.UTC(
+      referenceDate.getUTCFullYear(),
+      referenceDate.getUTCMonth(),
+      referenceDate.getUTCDate() - mondayOffset + 6
+    )).toISOString().slice(0, 10);
+    return due >= monday && due <= sunday;
+  }
+  return (!from || due >= from) && (!to || due <= to);
 }
 var PRIORITY_WEIGHTS = {
   urgent: 4,
@@ -1218,6 +998,14 @@ function filterAndSortTasks(tasks, options) {
   if (options.assignedTo && options.assignedTo !== "all") {
     result = result.filter((t) => t.assignedTo === options.assignedTo);
   }
+  if (options.dueDateFilter) {
+    result = result.filter((task) => matchesDueDateFilter(
+      task,
+      options.dueDateFilter,
+      options.dueDateFrom,
+      options.dueDateTo
+    ));
+  }
   const sortBy = options.sortBy || "createdAt";
   const sortOrder = options.sortOrder || "desc";
   const modifier = sortOrder === "asc" ? 1 : -1;
@@ -1244,23 +1032,77 @@ function filterAndSortTasks(tasks, options) {
 var tasksRouter = Router3();
 var VALID_STATUSES = ["todo", "in_progress", "review", "completed"];
 var VALID_PRIORITIES = ["low", "medium", "high", "urgent"];
-function checkProjectAccess(userId, userRole, project) {
-  if (userRole === "admin") return { hasAccess: true, isOwner: true };
-  const isOwner = project.ownerId === userId;
-  const isMember = isOwner || Array.isArray(project.members) && project.members.some((m) => m.userId === userId);
-  return { hasAccess: isMember, isOwner };
-}
 tasksRouter.get("/", authenticate, (req, res) => {
   const user = req.user;
-  const { projectId, status, priority, assignedTo, search, sortBy, sortOrder } = req.query;
+  const rawQuery = req.query;
+  function toStr(v) {
+    if (v === void 0 || v === null) return void 0;
+    if (typeof v === "string") return v;
+    if (typeof v === "object") return void 0;
+    return String(v);
+  }
+  const projectId = toStr(rawQuery.projectId);
+  const status = toStr(rawQuery.status);
+  const priority = toStr(rawQuery.priority);
+  const assignedTo = toStr(rawQuery.assignedTo);
+  const search = toStr(rawQuery.search);
+  const sortBy = toStr(rawQuery.sortBy);
+  const sortOrder = toStr(rawQuery.sortOrder);
+  const dueDateFilter = toStr(rawQuery.dueDateFilter);
+  const dueDateFrom = toStr(rawQuery.dueDateFrom);
+  const dueDateTo = toStr(rawQuery.dueDateTo);
+  if (rawQuery.dueDateFrom !== void 0 && typeof rawQuery.dueDateFrom !== "string" || rawQuery.dueDateTo !== void 0 && typeof rawQuery.dueDateTo !== "string") {
+    res.status(400).json({ error: "Due-date range boundaries must be single text values." });
+    return;
+  }
+  const allowedStatuses = ["todo", "in_progress", "review", "completed"];
+  const allowedSortFields = ["dueDate", "priority", "createdAt", "title"];
+  if (status && status !== "all" && !allowedStatuses.includes(status)) {
+    res.status(400).json({ error: "Invalid task status filter." });
+    return;
+  }
+  if (priority && priority !== "all" && !VALID_PRIORITIES.includes(priority)) {
+    res.status(400).json({ error: "Invalid task priority filter." });
+    return;
+  }
+  if (sortBy && !allowedSortFields.includes(sortBy)) {
+    res.status(400).json({ error: "Invalid task sort field." });
+    return;
+  }
+  if (sortOrder && sortOrder !== "asc" && sortOrder !== "desc") {
+    res.status(400).json({ error: "Invalid task sort order." });
+    return;
+  }
+  const allowedDueDateFilters = ["overdue", "today", "this_week", "none", "custom"];
+  if (rawQuery.dueDateFilter !== void 0 && typeof rawQuery.dueDateFilter !== "string") {
+    res.status(400).json({ error: "Due-date filter must be a single text value." });
+    return;
+  }
+  if (dueDateFilter && !allowedDueDateFilters.includes(dueDateFilter)) {
+    res.status(400).json({ error: "Invalid due-date filter." });
+    return;
+  }
+  if ((dueDateFrom || dueDateTo) && dueDateFilter !== "custom") {
+    res.status(400).json({ error: "A custom due-date range requires dueDateFilter=custom." });
+    return;
+  }
+  if (dueDateFilter === "custom") {
+    if (!dueDateFrom || !dueDateTo || !isValidDateOnly(dueDateFrom) || !isValidDateOnly(dueDateTo)) {
+      res.status(400).json({ error: "Custom due-date ranges require valid YYYY-MM-DD from and to dates." });
+      return;
+    }
+    if (dueDateFrom > dueDateTo) {
+      res.status(400).json({ error: "Custom due-date range start must be on or before its end." });
+      return;
+    }
+  }
   if (projectId) {
     const project = database.getProjectById(projectId);
     if (!project) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    const { hasAccess } = checkProjectAccess(user.id, user.role, project);
-    if (!hasAccess) {
+    if (!hasProjectAccess(project, user)) {
       res.status(403).json({ error: "Forbidden: You do not have permission to view tasks in this project." });
       return;
     }
@@ -1275,12 +1117,15 @@ tasksRouter.get("/", authenticate, (req, res) => {
   }
   const filtered = filterAndSortTasks(allTasks, {
     projectId,
-    status,
-    priority,
+    status: status === "all" ? "all" : status,
+    priority: priority === "all" ? "all" : priority,
     assignedTo,
     search,
     sortBy,
-    sortOrder
+    sortOrder,
+    dueDateFilter,
+    dueDateFrom,
+    dueDateTo
   });
   res.json(filtered);
 });
@@ -1293,8 +1138,7 @@ tasksRouter.get("/:id", authenticate, (req, res) => {
   }
   const project = database.getProjectById(task.projectId);
   if (project) {
-    const { hasAccess } = checkProjectAccess(user.id, user.role, project);
-    if (!hasAccess) {
+    if (!hasProjectAccess(project, user)) {
       res.status(403).json({ error: "Forbidden: You do not have access to this task." });
       return;
     }
@@ -1328,8 +1172,7 @@ tasksRouter.post("/", authenticate, (req, res) => {
     res.status(404).json({ error: "Target project does not exist." });
     return;
   }
-  const { hasAccess } = checkProjectAccess(user.id, user.role, project);
-  if (!hasAccess) {
+  if (!hasProjectAccess(project, user)) {
     res.status(403).json({ error: "Forbidden: You must be a project member or owner to create tasks in this project." });
     return;
   }
@@ -1411,13 +1254,16 @@ tasksRouter.patch("/:id", authenticate, (req, res) => {
     res.status(404).json({ error: "Associated project not found" });
     return;
   }
-  const { hasAccess, isOwner } = checkProjectAccess(user.id, user.role, project);
-  if (!hasAccess) {
+  if (!hasProjectAccess(project, user)) {
     res.status(403).json({ error: "Forbidden: You do not have access to this project." });
     return;
   }
-  const isCreatorOrAssignee = task.createdBy === user.id || task.assignedTo === user.id;
-  const canFullEdit = user.role === "admin" || isOwner || isCreatorOrAssignee;
+  const canFullEdit = canEditTask(project, task, user);
+  const forbiddenFields = getForbiddenTaskEditFields(req.body, canFullEdit);
+  if (forbiddenFields.length > 0) {
+    res.status(403).json({ error: "Forbidden: You cannot edit these task fields.", fields: forbiddenFields });
+    return;
+  }
   const {
     title,
     description,
@@ -1512,8 +1358,7 @@ tasksRouter.post("/batch-move", authenticate, (req, res) => {
     if (task) {
       const project = database.getProjectById(task.projectId);
       if (project) {
-        const { hasAccess } = checkProjectAccess(user.id, user.role, project);
-        if (hasAccess) {
+        if (hasProjectAccess(project, user)) {
           database.updateTask(
             move.id,
             {
@@ -1540,10 +1385,7 @@ tasksRouter.delete("/:id", authenticate, (req, res) => {
     res.status(404).json({ error: "Project not found" });
     return;
   }
-  const isOwner = project.ownerId === user.id;
-  const isCreator = task.createdBy === user.id;
-  const canDelete = user.role === "admin" || isOwner || isCreator;
-  if (!canDelete) {
+  if (!canDeleteTask(project, task, user)) {
     res.status(403).json({ error: "Forbidden: Only the task creator, project owner, or an administrator can delete this task." });
     return;
   }
@@ -1672,7 +1514,7 @@ notificationsRouter.patch("/read-all", authenticate, (req, res) => {
 // server/routes/dashboard.ts
 import { Router as Router6 } from "express";
 var dashboardRouter = Router6();
-dashboardRouter.get("/status", (req, res) => {
+dashboardRouter.get("/status", authenticate, (_req, res) => {
   res.json(getDatabaseStatus());
 });
 dashboardRouter.get("/stats", authenticate, (req, res) => {
@@ -1725,21 +1567,39 @@ dashboardRouter.get("/stats", authenticate, (req, res) => {
   };
   res.json(stats);
 });
-dashboardRouter.post("/reset-data", authenticate, (req, res) => {
-  if (req.user?.role !== "admin") {
-    res.status(403).json({ error: "Only admins can reset the workspace data." });
-    return;
-  }
-  seedInitialData();
-  res.json({ message: "Workspace demo data restored to initial baseline." });
-});
 
 // server.ts
 import { toNodeHandler } from "better-auth/node";
-dotenv.config();
+
+// server/rateLimit.ts
+var attempts = /* @__PURE__ */ new Map();
+function rateLimit(maxAttempts = 10, windowMs = 15 * 60 * 1e3) {
+  return (req, res, next) => {
+    const now = Date.now();
+    const key = `${req.ip}:${req.baseUrl}${req.path}`;
+    const current = attempts.get(key);
+    if (!current || current.resetAt <= now) {
+      attempts.set(key, { count: 1, resetAt: now + windowMs });
+      next();
+      return;
+    }
+    current.count += 1;
+    if (current.count > maxAttempts) {
+      res.setHeader("Retry-After", Math.ceil((current.resetAt - now) / 1e3));
+      res.status(429).json({ error: "Too many attempts. Please try again later." });
+      return;
+    }
+    next();
+  };
+}
+
+// server.ts
 var app = express();
 var PORT = Number(process.env.PORT) || 3e3;
 var isProd = process.env.NODE_ENV === "production";
+var authRateLimit = rateLimit(10, 15 * 60 * 1e3);
+app.all("/api/auth/sign-in/*", authRateLimit);
+app.all("/api/auth/sign-up/*", authRateLimit);
 var betterAuthHandler = toNodeHandler(auth);
 app.all("/api/auth/*", (req, res, next) => {
   if (/^\/api\/auth\/(me|users|profile|password)(\/|$)/.test(req.path)) {
@@ -1751,15 +1611,29 @@ app.all("/api/auth/*", (req, res, next) => {
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
+app.use((req, res, next) => {
+  const sendJson = res.json.bind(res);
+  res.json = ((body) => {
+    if (req.method === "GET" || req.method === "HEAD") return sendJson(body);
+    void flushMongoWrites().then(() => sendJson(body)).catch((error) => {
+      console.error("[Database] Mutation failed:", error instanceof Error ? error.message : "unknown error");
+      res.status(500);
+      sendJson({ error: "The database could not save this change." });
+    });
+    return res;
+  });
+  next();
+});
 app.use("/api/auth", authRouter);
 app.use("/api/projects", projectsRouter);
 app.use("/api/tasks", tasksRouter);
 app.use("/api/comments", commentsRouter);
 app.use("/api/notifications", notificationsRouter);
 app.use("/api/dashboard", dashboardRouter);
-app.get("/api/health", (req, res) => {
+app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", time: (/* @__PURE__ */ new Date()).toISOString() });
 });
+var httpServer;
 async function startServer() {
   await initDatabase();
   await connectAuthMongo();
@@ -1771,15 +1645,15 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path2.resolve(process.cwd(), "dist");
+    const distPath = path.resolve(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path2.join(distPath, "index.html"));
+    app.get("*", (_req, res) => {
+      res.sendFile(path.join(distPath, "index.html"));
     });
   }
-  app.use((err, req, res, _next) => {
+  app.use((err, _req, res, _next) => {
     if (res.headersSent) return;
-    if (err?.type === "entity.too.large") {
+    if (typeof err === "object" && err !== null && "type" in err && err.type === "entity.too.large") {
       res.status(413).json({ error: "Request body is too large." });
       return;
     }
@@ -1790,11 +1664,31 @@ async function startServer() {
     console.error("[HTTP] Unexpected request error:", err);
     res.status(500).json({ error: "An unexpected server error occurred." });
   });
-  app.listen(PORT, "0.0.0.0", () => {
+  httpServer = app.listen(PORT, "0.0.0.0", () => {
     console.log(`TaskFlow Server running on http://0.0.0.0:${PORT}`);
   });
 }
+async function shutdown(signal) {
+  console.log(`[Server] ${signal} received; closing gracefully.`);
+  try {
+    await flushMongoWrites();
+    if (httpServer) await new Promise((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
+    await closeMongo();
+    process.exit(0);
+  } catch (error) {
+    console.error("[Server] Graceful shutdown failed:", error instanceof Error ? error.message : "unknown error");
+    process.exit(1);
+  }
+}
+process.once("SIGINT", () => {
+  void shutdown("SIGINT");
+});
+process.once("SIGTERM", () => {
+  void shutdown("SIGTERM");
+});
 startServer().catch((err) => {
-  console.error("Failed to start server:", err);
+  const message = err instanceof Error ? err.message : "Unknown startup error.";
+  console.error("Failed to start server:", message);
+  void closeMongo();
   process.exit(1);
 });

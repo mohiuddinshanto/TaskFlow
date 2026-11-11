@@ -1,15 +1,11 @@
 import React, { useState } from 'react';
 import {
-  FolderKanban,
   Plus,
   Calendar,
-  Users,
   Search,
   Trash2,
   Edit2,
   ArrowRight,
-  Clock,
-  Layers,
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { Avatar } from './Avatar';
@@ -25,6 +21,8 @@ export const ProjectsView: React.FC = () => {
     setNewProjectModalOpen,
     deleteProject,
     updateProject,
+    changeProjectMemberRole,
+    transferProjectOwnership,
     currentUser,
     allUsers,
   } = useStore();
@@ -32,6 +30,8 @@ export const ProjectsView: React.FC = () => {
   const [search, setSearch] = useState('');
   const [projectToDelete, setProjectToDelete] = useState<string | null>(null);
   const [projectToEdit, setProjectToEdit] = useState<Project | null>(null);
+  const [memberToTransfer, setMemberToTransfer] = useState<{ project: Project; userId: string; name: string } | null>(null);
+  const [isTransferring, setIsTransferring] = useState(false);
 
   const filteredProjects = projects.filter(
     (p) =>
@@ -46,6 +46,14 @@ export const ProjectsView: React.FC = () => {
     if (!projectToDelete) return;
     await deleteProject(projectToDelete);
     setProjectToDelete(null);
+  };
+
+  const handleTransferOwnership = async () => {
+    if (!memberToTransfer) return;
+    setIsTransferring(true);
+    const transferred = await transferProjectOwnership(memberToTransfer.project.id, memberToTransfer.userId);
+    setIsTransferring(false);
+    if (transferred) setMemberToTransfer(null);
   };
 
   return (
@@ -94,7 +102,6 @@ export const ProjectsView: React.FC = () => {
           const projectTasks = tasks.filter((t) => t.projectId === proj.id);
           const progress = calculateProjectProgress(projectTasks);
           const completedCount = projectTasks.filter((t) => t.status === 'completed').length;
-          const owner = getUser(proj.ownerId);
           const canManage = currentUser?.role === 'admin' || proj.ownerId === currentUser?.id;
 
           return (
@@ -195,6 +202,40 @@ export const ProjectsView: React.FC = () => {
                   </div>
                 </div>
 
+                <div className="mb-4 space-y-2">
+                  {proj.members.map((m) => {
+                    const memberUser = getUser(m.userId);
+                    const isProjectOwner = proj.ownerId === currentUser?.id;
+                    const isOwnerMember = proj.ownerId === m.userId;
+                    return (
+                      <div key={`role-${m.userId}`} className="flex items-center justify-between gap-2 text-[11px]">
+                        <span className="truncate text-slate-600 dark:text-slate-300">{memberUser?.name || 'Project member'}</span>
+                        {isProjectOwner && !isOwnerMember ? (
+                          <div className="flex shrink-0 items-center gap-2">
+                            <label className="sr-only" htmlFor={`member-role-${proj.id}-${m.userId}`}>Role for {memberUser?.name || 'member'}</label>
+                            <select
+                              id={`member-role-${proj.id}-${m.userId}`}
+                              value={m.role === 'admin' ? 'admin' : 'member'}
+                              onChange={(event) => { void changeProjectMemberRole(proj.id, m.userId, event.target.value === 'admin' ? 'admin' : 'member'); }}
+                              className="rounded border border-slate-200 bg-white px-1.5 py-1 text-[10px] dark:border-slate-700 dark:bg-slate-800"
+                            >
+                              <option value="member">Member</option>
+                              <option value="admin">Admin</option>
+                            </select>
+                            <button type="button" onClick={() => setMemberToTransfer({ project: proj, userId: m.userId, name: memberUser?.name || 'this member' })} className="text-blue-600 hover:text-blue-700 dark:text-blue-400">
+                              Transfer ownership
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="shrink-0 rounded bg-slate-100 px-2 py-1 capitalize text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                            {isOwnerMember ? 'Owner' : m.role}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
                 {/* Primary CTA */}
                 <button
                   onClick={() => {
@@ -249,6 +290,22 @@ export const ProjectsView: React.FC = () => {
             if (saved) setProjectToEdit(null);
           }}
         />
+      )}
+      {memberToTransfer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4" role="presentation">
+          <div role="dialog" aria-modal="true" aria-labelledby="transfer-owner-title" className="w-full max-w-md space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-xl dark:border-slate-800 dark:bg-slate-900">
+            <h2 id="transfer-owner-title" className="text-base font-bold text-slate-900 dark:text-white">Transfer project ownership?</h2>
+            <p className="text-sm text-slate-600 dark:text-slate-300">
+              {memberToTransfer.name} will become Owner of “{memberToTransfer.project.name}”. You will become a project Admin and will no longer be able to change roles or transfer ownership.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button type="button" disabled={isTransferring} onClick={() => setMemberToTransfer(null)} className="rounded-lg border border-slate-200 px-3 py-2 text-sm dark:border-slate-700">Cancel</button>
+              <button type="button" disabled={isTransferring} onClick={() => void handleTransferOwnership()} className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                {isTransferring ? 'Transferring…' : 'Confirm transfer'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

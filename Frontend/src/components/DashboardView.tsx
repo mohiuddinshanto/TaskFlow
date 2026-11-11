@@ -8,20 +8,17 @@ import {
   TrendingUp,
   ArrowRight,
   Calendar,
-  Layers,
-  Activity,
   Plus,
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { Avatar } from './Avatar';
-import { calculateProjectProgress } from '../utils/taskCalculations';
+import { calculateProjectProgress, isTaskOverdue } from '../utils/taskCalculations';
 
 export const DashboardView: React.FC = () => {
   const {
     currentUser,
     dashboardStats,
     fetchDashboardStats,
-    isLoadingStats,
     setActiveView,
     selectProject,
     setNewTaskModalOpen,
@@ -43,8 +40,8 @@ export const DashboardView: React.FC = () => {
     pendingTasks: tasks.filter((t) => t.status === 'todo').length,
     inProgressTasks: tasks.filter((t) => t.status === 'in_progress').length,
     reviewTasks: tasks.filter((t) => t.status === 'review').length,
-    overdueTasks: 1,
-    completionRate: 35,
+    overdueTasks: tasks.filter((task) => isTaskOverdue(task)).length,
+    completionRate: tasks.length ? Math.round((tasks.filter((task) => task.status === 'completed').length / tasks.length) * 100) : 0,
     recentProjects: projects.slice(0, 3),
     recentActivities: [],
     upcomingDeadlines: tasks.filter((t) => t.dueDate && t.status !== 'completed').slice(0, 4),

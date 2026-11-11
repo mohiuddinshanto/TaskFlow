@@ -9,9 +9,10 @@ import {
   CheckSquare,
   MessageSquare,
   AlertCircle,
+  Users,
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
-import { NotificationType } from '../types/index';
+import { Notification, NotificationType } from '../types/index';
 
 export const NotificationsView: React.FC = () => {
   const {
@@ -40,10 +41,14 @@ export const NotificationsView: React.FC = () => {
         return <MessageSquare className="w-4 h-4 text-purple-500" />;
       case 'status_changed':
         return <Clock className="w-4 h-4 text-amber-500" />;
+      case 'project_role_changed':
+        return <Users className="w-4 h-4 text-indigo-500" />;
+      case 'ownership_transferred':
+        return <FolderKanban className="w-4 h-4 text-blue-500" />;
     }
   };
 
-  const handleNotificationClick = async (notif: any) => {
+  const handleNotificationClick = async (notif: Notification) => {
     if (!notif.isRead) {
       await markNotificationRead(notif.id);
     }

@@ -1,4 +1,4 @@
-import { Task, TaskFilterOptions, TaskPriority, TaskStatus } from '../types/index';
+import { Task, TaskDueDateFilter, TaskFilterOptions, TaskPriority, TaskStatus } from '../types/index';
 
 /**
  * Calculates project completion progress as an integer percentage (0 - 100).
@@ -15,8 +15,54 @@ export function calculateProjectProgress(tasks: Task[]): number {
 export function isTaskOverdue(task: Task, referenceDate: Date = new Date()): boolean {
   if (!task.dueDate || task.status === 'completed') return false;
   const due = new Date(task.dueDate);
-  // Set to end of the day or exact comparison
-  return due.getTime() < referenceDate.getTime();
+  const dueDay = Date.UTC(due.getUTCFullYear(), due.getUTCMonth(), due.getUTCDate());
+  const currentDay = Date.UTC(referenceDate.getUTCFullYear(), referenceDate.getUTCMonth(), referenceDate.getUTCDate());
+  return dueDay < currentDay;
+}
+
+export function isValidDateOnly(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function dueDateKey(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 10) : undefined;
+}
+
+function matchesDueDateFilter(
+  task: Task,
+  filter: TaskDueDateFilter,
+  from: string | undefined,
+  to: string | undefined,
+  referenceDate = new Date(),
+): boolean {
+  if (filter === 'none') return !task.dueDate;
+  if (!task.dueDate) return false;
+  if (filter === 'overdue') return isTaskOverdue(task, referenceDate);
+
+  const due = dueDateKey(task.dueDate);
+  if (!due) return false;
+  const today = referenceDate.toISOString().slice(0, 10);
+  if (filter === 'today') return due === today;
+  if (filter === 'this_week') {
+    const day = referenceDate.getUTCDay();
+    const mondayOffset = (day + 6) % 7;
+    const monday = new Date(Date.UTC(
+      referenceDate.getUTCFullYear(),
+      referenceDate.getUTCMonth(),
+      referenceDate.getUTCDate() - mondayOffset,
+    )).toISOString().slice(0, 10);
+    const sunday = new Date(Date.UTC(
+      referenceDate.getUTCFullYear(),
+      referenceDate.getUTCMonth(),
+      referenceDate.getUTCDate() - mondayOffset + 6,
+    )).toISOString().slice(0, 10);
+    return due >= monday && due <= sunday;
+  }
+  return (!from || due >= from) && (!to || due <= to);
 }
 
 /**
@@ -91,6 +137,15 @@ export function filterAndSortTasks(tasks: Task[], options: TaskFilterOptions): T
   // Assignee filter
   if (options.assignedTo && options.assignedTo !== 'all') {
     result = result.filter((t) => t.assignedTo === options.assignedTo);
+  }
+
+  if (options.dueDateFilter) {
+    result = result.filter((task) => matchesDueDateFilter(
+      task,
+      options.dueDateFilter!,
+      options.dueDateFrom,
+      options.dueDateTo,
+    ));
   }
 
   // Sorting

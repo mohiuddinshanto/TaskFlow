@@ -1,21 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import {
   X,
-  Calendar,
-  Clock,
-  User,
   Trash2,
   Save,
   MessageSquare,
-  AlertCircle,
-  Tag,
   Send,
-  CheckCircle2,
-  Eye,
-  Circle,
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
-import { Task, TaskPriority, TaskStatus } from '../types/index';
+import { TaskPriority, TaskStatus } from '../types/index';
 import { Avatar } from './Avatar';
 import toast from 'react-hot-toast';
 
@@ -73,7 +65,6 @@ export const TaskDetailModal: React.FC = () => {
   if (!task) return null;
 
   const project = projects.find((p) => p.id === task.projectId);
-  const author = allUsers.find((u) => u.id === task.createdBy);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();

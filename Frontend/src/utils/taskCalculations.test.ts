@@ -6,6 +6,7 @@ import {
   groupTasksByStatus,
   filterAndSortTasks,
   countUnreadNotifications,
+  isValidDateOnly,
 } from './taskCalculations';
 import { Task } from '../types/index';
 
@@ -130,4 +131,30 @@ test('countUnreadNotifications counts only unread notifications', () => {
   ];
   assert.equal(countUnreadNotifications(notifs), 3);
   assert.equal(countUnreadNotifications([]), 0);
+});
+
+test('due-date filters support overdue, today, this week, missing dates, and custom ranges', () => {
+  const tasks: Task[] = [
+    { ...mockTasks[0], id: 'due-overdue', status: 'todo', dueDate: '2026-11-10T00:00:00.000Z' },
+    { ...mockTasks[0], id: 'due-today', status: 'todo', dueDate: '2026-11-11T00:00:00.000Z' },
+    { ...mockTasks[0], id: 'due-week', status: 'in_progress', dueDate: '2026-11-15T00:00:00.000Z' },
+    { ...mockTasks[0], id: 'due-next-week', status: 'todo', dueDate: '2026-11-16T00:00:00.000Z' },
+    { ...mockTasks[0], id: 'due-none', status: 'todo', dueDate: undefined },
+    { ...mockTasks[0], id: 'completed-overdue', status: 'completed', dueDate: '2026-11-10T00:00:00.000Z' },
+  ];
+  const ids = (options: Parameters<typeof filterAndSortTasks>[1]) =>
+    filterAndSortTasks(tasks, options).map((task) => task.id).sort();
+
+  assert.deepEqual(ids({ dueDateFilter: 'overdue' }), ['due-overdue']);
+  assert.deepEqual(ids({ dueDateFilter: 'today' }), ['due-today']);
+  assert.deepEqual(ids({ dueDateFilter: 'this_week' }), ['completed-overdue', 'due-overdue', 'due-today', 'due-week']);
+  assert.deepEqual(ids({ dueDateFilter: 'none' }), ['due-none']);
+  assert.deepEqual(ids({ dueDateFilter: 'custom', dueDateFrom: '2026-11-11', dueDateTo: '2026-11-15' }), ['due-today', 'due-week']);
+  assert.deepEqual(ids({ status: 'todo', priority: 'urgent', dueDateFilter: 'today' }), []);
+});
+
+test('date-only validation rejects malformed and impossible dates', () => {
+  assert.equal(isValidDateOnly('2026-11-11'), true);
+  assert.equal(isValidDateOnly('2026-02-30'), false);
+  assert.equal(isValidDateOnly('11/11/2026'), false);
 });

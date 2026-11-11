@@ -1,26 +1,87 @@
 import { Router, Response } from 'express';
 import { database } from '../db';
 import { authenticate, AuthenticatedRequest } from '../auth';
-import { Task, TaskPriority, TaskStatus } from '../../src/types/index';
-import { filterAndSortTasks } from '../../src/utils/taskCalculations';
+import { Task, TaskFilterOptions, TaskPriority, TaskStatus } from '../../src/types/index';
+import { filterAndSortTasks, isValidDateOnly } from '../../src/utils/taskCalculations';
+import { canDeleteTask, canEditTask, getForbiddenTaskEditFields, hasProjectAccess } from '../projectPermissions';
 
 export const tasksRouter = Router();
 
 const VALID_STATUSES: TaskStatus[] = ['todo', 'in_progress', 'review', 'completed'];
 const VALID_PRIORITIES: TaskPriority[] = ['low', 'medium', 'high', 'urgent'];
 
-// Helper to check user membership in a project
-function checkProjectAccess(userId: string, userRole: string, project: any): { hasAccess: boolean; isOwner: boolean } {
-  if (userRole === 'admin') return { hasAccess: true, isOwner: true };
-  const isOwner = project.ownerId === userId;
-  const isMember = isOwner || (Array.isArray(project.members) && project.members.some((m: any) => m.userId === userId));
-  return { hasAccess: isMember, isOwner };
-}
-
 // GET /api/tasks - list tasks with filtering & authorization
 tasksRouter.get('/', authenticate, (req: AuthenticatedRequest, res: Response) => {
   const user = req.user!;
-  const { projectId, status, priority, assignedTo, search, sortBy, sortOrder } = req.query;
+  const rawQuery = req.query;
+
+  // Coerce all query params to plain strings to prevent NoSQL-object injection crashing the utility
+  function toStr(v: unknown): string | undefined {
+    if (v === undefined || v === null) return undefined;
+    if (typeof v === 'string') return v;
+    if (typeof v === 'object') return undefined; // reject objects (e.g. {$ne: null})
+    return String(v);
+  }
+
+  const projectId = toStr(rawQuery.projectId);
+  const status = toStr(rawQuery.status);
+  const priority = toStr(rawQuery.priority);
+  const assignedTo = toStr(rawQuery.assignedTo);
+  const search = toStr(rawQuery.search);
+  const sortBy = toStr(rawQuery.sortBy);
+  const sortOrder = toStr(rawQuery.sortOrder);
+  const dueDateFilter = toStr(rawQuery.dueDateFilter);
+  const dueDateFrom = toStr(rawQuery.dueDateFrom);
+  const dueDateTo = toStr(rawQuery.dueDateTo);
+
+  if ((rawQuery.dueDateFrom !== undefined && typeof rawQuery.dueDateFrom !== 'string') ||
+      (rawQuery.dueDateTo !== undefined && typeof rawQuery.dueDateTo !== 'string')) {
+    res.status(400).json({ error: 'Due-date range boundaries must be single text values.' });
+    return;
+  }
+
+  const allowedStatuses: TaskStatus[] = ['todo', 'in_progress', 'review', 'completed'];
+  const allowedSortFields: NonNullable<TaskFilterOptions['sortBy']>[] = ['dueDate', 'priority', 'createdAt', 'title'];
+  if (status && status !== 'all' && !allowedStatuses.includes(status as TaskStatus)) {
+    res.status(400).json({ error: 'Invalid task status filter.' });
+    return;
+  }
+  if (priority && priority !== 'all' && !VALID_PRIORITIES.includes(priority as TaskPriority)) {
+    res.status(400).json({ error: 'Invalid task priority filter.' });
+    return;
+  }
+  if (sortBy && !allowedSortFields.includes(sortBy as NonNullable<TaskFilterOptions['sortBy']>)) {
+    res.status(400).json({ error: 'Invalid task sort field.' });
+    return;
+  }
+  if (sortOrder && sortOrder !== 'asc' && sortOrder !== 'desc') {
+    res.status(400).json({ error: 'Invalid task sort order.' });
+    return;
+  }
+
+  const allowedDueDateFilters = ['overdue', 'today', 'this_week', 'none', 'custom'] as const;
+  if (rawQuery.dueDateFilter !== undefined && typeof rawQuery.dueDateFilter !== 'string') {
+    res.status(400).json({ error: 'Due-date filter must be a single text value.' });
+    return;
+  }
+  if (dueDateFilter && !allowedDueDateFilters.includes(dueDateFilter as typeof allowedDueDateFilters[number])) {
+    res.status(400).json({ error: 'Invalid due-date filter.' });
+    return;
+  }
+  if ((dueDateFrom || dueDateTo) && dueDateFilter !== 'custom') {
+    res.status(400).json({ error: 'A custom due-date range requires dueDateFilter=custom.' });
+    return;
+  }
+  if (dueDateFilter === 'custom') {
+    if (!dueDateFrom || !dueDateTo || !isValidDateOnly(dueDateFrom) || !isValidDateOnly(dueDateTo)) {
+      res.status(400).json({ error: 'Custom due-date ranges require valid YYYY-MM-DD from and to dates.' });
+      return;
+    }
+    if (dueDateFrom > dueDateTo) {
+      res.status(400).json({ error: 'Custom due-date range start must be on or before its end.' });
+      return;
+    }
+  }
 
   // Verify access if querying a specific project
   if (projectId) {
@@ -29,8 +90,7 @@ tasksRouter.get('/', authenticate, (req: AuthenticatedRequest, res: Response) =>
       res.status(404).json({ error: 'Project not found' });
       return;
     }
-    const { hasAccess } = checkProjectAccess(user.id, user.role, project);
-    if (!hasAccess) {
+    if (!hasProjectAccess(project, user)) {
       res.status(403).json({ error: 'Forbidden: You do not have permission to view tasks in this project.' });
       return;
     }
@@ -51,12 +111,15 @@ tasksRouter.get('/', authenticate, (req: AuthenticatedRequest, res: Response) =>
   // Apply filters and sorting
   const filtered = filterAndSortTasks(allTasks, {
     projectId: projectId as string,
-    status: status as TaskStatus,
-    priority: priority as TaskPriority,
-    assignedTo: assignedTo as string,
-    search: search as string,
-    sortBy: sortBy as any,
-    sortOrder: sortOrder as any,
+    status: status === 'all' ? 'all' : status as TaskStatus | undefined,
+    priority: priority === 'all' ? 'all' : priority as TaskPriority | undefined,
+    assignedTo,
+    search,
+    sortBy: sortBy as TaskFilterOptions['sortBy'],
+    sortOrder: sortOrder as TaskFilterOptions['sortOrder'],
+    dueDateFilter: dueDateFilter as TaskFilterOptions['dueDateFilter'],
+    dueDateFrom,
+    dueDateTo,
   });
 
   res.json(filtered);
@@ -74,8 +137,7 @@ tasksRouter.get('/:id', authenticate, (req: AuthenticatedRequest, res: Response)
 
   const project = database.getProjectById(task.projectId);
   if (project) {
-    const { hasAccess } = checkProjectAccess(user.id, user.role, project);
-    if (!hasAccess) {
+    if (!hasProjectAccess(project, user)) {
       res.status(403).json({ error: 'Forbidden: You do not have access to this task.' });
       return;
     }
@@ -117,8 +179,7 @@ tasksRouter.post('/', authenticate, (req: AuthenticatedRequest, res: Response) =
   }
 
   // Permission check: user must belong to project or be admin
-  const { hasAccess } = checkProjectAccess(user.id, user.role, project);
-  if (!hasAccess) {
+  if (!hasProjectAccess(project, user)) {
     res.status(403).json({ error: 'Forbidden: You must be a project member or owner to create tasks in this project.' });
     return;
   }
@@ -213,15 +274,19 @@ tasksRouter.patch('/:id', authenticate, (req: AuthenticatedRequest, res: Respons
   }
 
   // Authorization check
-  const { hasAccess, isOwner } = checkProjectAccess(user.id, user.role, project);
-  if (!hasAccess) {
+  if (!hasProjectAccess(project, user)) {
     res.status(403).json({ error: 'Forbidden: You do not have access to this project.' });
     return;
   }
 
   // Members can change status, comments, or tasks assigned to them; owners and admins can update all fields
-  const isCreatorOrAssignee = task.createdBy === user.id || task.assignedTo === user.id;
-  const canFullEdit = user.role === 'admin' || isOwner || isCreatorOrAssignee;
+  const canFullEdit = canEditTask(project, task, user);
+
+  const forbiddenFields = getForbiddenTaskEditFields(req.body, canFullEdit);
+  if (forbiddenFields.length > 0) {
+    res.status(403).json({ error: 'Forbidden: You cannot edit these task fields.', fields: forbiddenFields });
+    return;
+  }
 
   const {
     title,
@@ -333,8 +398,7 @@ tasksRouter.post('/batch-move', authenticate, (req: AuthenticatedRequest, res: R
     if (task) {
       const project = database.getProjectById(task.projectId);
       if (project) {
-        const { hasAccess } = checkProjectAccess(user.id, user.role, project);
-        if (hasAccess) {
+        if (hasProjectAccess(project, user)) {
           database.updateTask(
             move.id,
             {
@@ -367,12 +431,7 @@ tasksRouter.delete('/:id', authenticate, (req: AuthenticatedRequest, res: Respon
     return;
   }
 
-  // Authorization: Only admin, project owner, or the task creator can delete the task
-  const isOwner = project.ownerId === user.id;
-  const isCreator = task.createdBy === user.id;
-  const canDelete = user.role === 'admin' || isOwner || isCreator;
-
-  if (!canDelete) {
+  if (!canDeleteTask(project, task, user)) {
     res.status(403).json({ error: 'Forbidden: Only the task creator, project owner, or an administrator can delete this task.' });
     return;
   }

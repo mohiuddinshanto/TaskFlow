@@ -1,13 +1,13 @@
 import { Router, Response } from 'express';
-import { database, seedInitialData, getDatabaseStatus } from '../db';
+import { database, getDatabaseStatus } from '../db';
 import { authenticate, AuthenticatedRequest } from '../auth';
 import { DashboardStats, TaskStatus, TaskPriority } from '../../src/types/index';
-import { calculateProjectProgress, isTaskOverdue } from '../../src/utils/taskCalculations';
+import { isTaskOverdue } from '../../src/utils/taskCalculations';
 
 export const dashboardRouter = Router();
 
 // GET /api/dashboard/status
-dashboardRouter.get('/status', (req, res) => {
+dashboardRouter.get('/status', authenticate, (_req, res) => {
   res.json(getDatabaseStatus());
 });
 
@@ -89,12 +89,3 @@ dashboardRouter.get('/stats', authenticate, (req: AuthenticatedRequest, res: Res
   res.json(stats);
 });
 
-// POST /api/dashboard/reset-data (reset to fresh seed data)
-dashboardRouter.post('/reset-data', authenticate, (req: AuthenticatedRequest, res: Response) => {
-  if (req.user?.role !== 'admin') {
-    res.status(403).json({ error: 'Only admins can reset the workspace data.' });
-    return;
-  }
-  seedInitialData();
-  res.json({ message: 'Workspace demo data restored to initial baseline.' });
-});

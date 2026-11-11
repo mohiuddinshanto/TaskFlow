@@ -2,10 +2,7 @@ import React, { useState } from 'react';
 import {
   Plus,
   Calendar,
-  MessageSquare,
   AlertCircle,
-  Filter,
-  Users,
   Search,
   CheckCircle2,
   Clock,
@@ -14,11 +11,12 @@ import {
   GripVertical,
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
-import { Task, TaskPriority, TaskStatus } from '../types/index';
+import { TaskPriority, TaskStatus } from '../types/index';
+import type { LucideIcon } from 'lucide-react';
 import { Avatar } from './Avatar';
 import { groupTasksByStatus, isTaskOverdue } from '../utils/taskCalculations';
 
-const COLUMNS: { id: TaskStatus; label: string; icon: React.FC<any>; color: string; border: string }[] = [
+const COLUMNS: { id: TaskStatus; label: string; icon: LucideIcon; color: string; border: string }[] = [
   { id: 'todo', label: 'To Do', icon: Circle, color: 'text-slate-500', border: 'border-slate-300 dark:border-slate-700' },
   { id: 'in_progress', label: 'In Progress', icon: Clock, color: 'text-amber-500', border: 'border-amber-300 dark:border-amber-800' },
   { id: 'review', label: 'In Review', icon: Eye, color: 'text-purple-500', border: 'border-purple-300 dark:border-purple-800' },
@@ -29,7 +27,6 @@ export const KanbanBoardView: React.FC = () => {
   const {
     projects,
     activeProjectId,
-    selectProject,
     tasks,
     moveTask,
     openTaskModal,
@@ -41,7 +38,7 @@ export const KanbanBoardView: React.FC = () => {
   const [dragOverColumn, setDragOverColumn] = useState<TaskStatus | null>(null);
   const [boardSearch, setBoardSearch] = useState('');
   const [priorityFilter, setPriorityFilter] = useState<string>('all');
-  const [assigneeFilter, setAssigneeFilter] = useState<string>('all');
+  const [assigneeFilter] = useState<string>('all');
 
   const activeProject = projects.find((p) => p.id === activeProjectId) || projects[0];
 

@@ -1,10 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Search,
-  Filter,
   Plus,
-  Calendar,
-  AlertCircle,
   ArrowUpDown,
   CheckCircle2,
   Clock,
@@ -13,13 +10,14 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
-import { Task, TaskPriority, TaskStatus } from '../types/index';
+import { Task, TaskDueDateFilter, TaskPriority, TaskStatus } from '../types/index';
 import { Avatar } from './Avatar';
-import { isTaskOverdue, filterAndSortTasks } from '../utils/taskCalculations';
+import { isTaskOverdue } from '../utils/taskCalculations';
+import { api } from '../lib/api';
+import toast from 'react-hot-toast';
 
 export const TasksListView: React.FC = () => {
   const {
-    tasks,
     projects,
     allUsers,
     openTaskModal,
@@ -33,18 +31,59 @@ export const TasksListView: React.FC = () => {
   const [priorityFilter, setPriorityFilter] = useState<string>('all');
   const [projectFilter, setProjectFilter] = useState<string>('all');
   const [assignedFilter, setAssignedFilter] = useState<string>('all');
+  const [dueDateFilter, setDueDateFilter] = useState<TaskDueDateFilter | 'all'>('all');
+  const [dueDateFrom, setDueDateFrom] = useState('');
+  const [dueDateTo, setDueDateTo] = useState('');
   const [sortBy, setSortBy] = useState<'createdAt' | 'dueDate' | 'priority' | 'title'>('createdAt');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [filteredTasks, setFilteredTasks] = useState<Task[]>([]);
+  const [isLoadingFilteredTasks, setIsLoadingFilteredTasks] = useState(true);
 
-  const filteredTasks = filterAndSortTasks(tasks, {
-    search,
-    status: statusFilter as any,
-    priority: priorityFilter as any,
-    projectId: projectFilter === 'all' ? undefined : projectFilter,
-    assignedTo: assignedFilter as any,
-    sortBy,
-    sortOrder,
-  });
+  useEffect(() => {
+    if (dueDateFilter === 'custom' && (!dueDateFrom || !dueDateTo)) {
+      setFilteredTasks([]);
+      setIsLoadingFilteredTasks(false);
+      return;
+    }
+    const params = new URLSearchParams();
+    if (search.trim()) params.set('search', search.trim());
+    if (statusFilter !== 'all') params.set('status', statusFilter);
+    if (priorityFilter !== 'all') params.set('priority', priorityFilter);
+    if (projectFilter !== 'all') params.set('projectId', projectFilter);
+    if (assignedFilter !== 'all') params.set('assignedTo', assignedFilter);
+    params.set('sortBy', sortBy);
+    params.set('sortOrder', sortOrder);
+    if (dueDateFilter !== 'all' && (dueDateFilter !== 'custom' || (dueDateFrom && dueDateTo))) {
+      params.set('dueDateFilter', dueDateFilter);
+      if (dueDateFilter === 'custom') {
+        params.set('dueDateFrom', dueDateFrom);
+        params.set('dueDateTo', dueDateTo);
+      }
+    }
+
+    let cancelled = false;
+    setIsLoadingFilteredTasks(true);
+    api.get<Task[]>(`/api/tasks?${params.toString()}`)
+      .then((result) => { if (!cancelled) setFilteredTasks(result); })
+      .catch((error: unknown) => {
+        if (!cancelled) toast.error(error instanceof Error ? error.message : 'Could not load filtered tasks.');
+      })
+      .finally(() => { if (!cancelled) setIsLoadingFilteredTasks(false); });
+    return () => { cancelled = true; };
+  }, [search, statusFilter, priorityFilter, projectFilter, assignedFilter, dueDateFilter, dueDateFrom, dueDateTo, sortBy, sortOrder]);
+
+  const resetFilters = () => {
+    setSearch('');
+    setStatusFilter('all');
+    setPriorityFilter('all');
+    setProjectFilter('all');
+    setAssignedFilter('all');
+    setDueDateFilter('all');
+    setDueDateFrom('');
+    setDueDateTo('');
+    setSortBy('createdAt');
+    setSortOrder('desc');
+  };
 
   const getUser = (userId?: string) => allUsers.find((u) => u.id === userId);
   const getProject = (projId: string) => projects.find((p) => p.id === projId);
@@ -174,6 +213,34 @@ export const TasksListView: React.FC = () => {
               </option>
             ))}
           </select>
+
+          {/* Due Date Filter */}
+          <select
+            value={dueDateFilter}
+            onChange={(e) => setDueDateFilter(e.target.value as TaskDueDateFilter | 'all')}
+            aria-label="Filter by due date"
+            className="bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 text-xs text-slate-800 dark:text-slate-200 rounded-lg px-2.5 py-1.5 focus:outline-hidden"
+          >
+            <option value="all">Any Due Date</option>
+            <option value="overdue">Overdue</option>
+            <option value="today">Due Today</option>
+            <option value="this_week">Due This Week</option>
+            <option value="none">No Due Date</option>
+            <option value="custom">Custom Range</option>
+          </select>
+          {dueDateFilter === 'custom' && (
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="sr-only" htmlFor="task-due-from">Due from</label>
+              <input id="task-due-from" type="date" value={dueDateFrom} onChange={(e) => setDueDateFrom(e.target.value)} aria-label="Due from" className="rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-800" />
+              <span className="text-xs text-slate-500">to</span>
+              <label className="sr-only" htmlFor="task-due-to">Due to</label>
+              <input id="task-due-to" type="date" value={dueDateTo} onChange={(e) => setDueDateTo(e.target.value)} aria-label="Due to" className="rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-800" />
+              {(!dueDateFrom || !dueDateTo) && <span className="text-[11px] text-slate-500">Choose both dates</span>}
+            </div>
+          )}
+          <button type="button" onClick={resetFilters} className="rounded border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
+            Reset filters
+          </button>
         </div>
       </div>
 
@@ -217,7 +284,9 @@ export const TasksListView: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {filteredTasks.length === 0 ? (
+              {isLoadingFilteredTasks ? (
+                <tr><td colSpan={7} className="py-12 text-center text-xs text-slate-400">Loading tasks…</td></tr>
+              ) : filteredTasks.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="py-12 text-center text-xs text-slate-400">
                     No tasks matching your current filters.
