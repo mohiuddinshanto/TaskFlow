@@ -105,7 +105,11 @@ export const PRIORITY_WEIGHTS: Record<TaskPriority, number> = {
 /**
  * Filters and sorts tasks based on filter options
  */
-export function filterAndSortTasks(tasks: Task[], options: TaskFilterOptions): Task[] {
+export function filterAndSortTasks(
+  tasks: Task[],
+  options: TaskFilterOptions,
+  referenceDate: Date = new Date(),
+): Task[] {
   let result = [...tasks];
 
   // Project filter
@@ -145,6 +149,7 @@ export function filterAndSortTasks(tasks: Task[], options: TaskFilterOptions): T
       options.dueDateFilter!,
       options.dueDateFrom,
       options.dueDateTo,
+      referenceDate,
     ));
   }
 

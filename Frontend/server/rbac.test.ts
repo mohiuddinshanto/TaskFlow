@@ -80,7 +80,7 @@ test('plain project members cannot submit task edits, status changes, or reorder
   assert.deepEqual(getForbiddenTaskEditFields({ priority: 'urgent' }, true), []);
 });
 
-test('PATCH /api/tasks/:id rejects a plain member editing a full-edit field', () => {
+test('PATCH /api/tasks/:id rejects a plain member before applying task edits', () => {
   const projectId = 'rbac-patch-project';
   const taskId = 'rbac-patch-task';
   database.createProject({
@@ -110,7 +110,10 @@ test('PATCH /api/tasks/:id rejects a plain member editing a full-edit field', ()
   );
 
   assert.equal(response.statusCode, 403);
-  assert.deepEqual((response.body as { fields: string[] }).fields, ['priority']);
+  assert.equal(
+    (response.body as { error: string }).error,
+    'Only project Owners, project Admins, or platform administrators can change tasks.',
+  );
   assert.equal(database.getTaskById(taskId)?.priority, 'medium');
 });
 

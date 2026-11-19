@@ -134,6 +134,7 @@ test('countUnreadNotifications counts only unread notifications', () => {
 });
 
 test('due-date filters support overdue, today, this week, missing dates, and custom ranges', () => {
+  const referenceDate = new Date('2026-11-11T12:00:00.000Z');
   const tasks: Task[] = [
     { ...mockTasks[0], id: 'due-overdue', status: 'todo', dueDate: '2026-11-10T00:00:00.000Z' },
     { ...mockTasks[0], id: 'due-today', status: 'todo', dueDate: '2026-11-11T00:00:00.000Z' },
@@ -143,7 +144,7 @@ test('due-date filters support overdue, today, this week, missing dates, and cus
     { ...mockTasks[0], id: 'completed-overdue', status: 'completed', dueDate: '2026-11-10T00:00:00.000Z' },
   ];
   const ids = (options: Parameters<typeof filterAndSortTasks>[1]) =>
-    filterAndSortTasks(tasks, options).map((task) => task.id).sort();
+    filterAndSortTasks(tasks, options, referenceDate).map((task) => task.id).sort();
 
   assert.deepEqual(ids({ dueDateFilter: 'overdue' }), ['due-overdue']);
   assert.deepEqual(ids({ dueDateFilter: 'today' }), ['due-today']);
