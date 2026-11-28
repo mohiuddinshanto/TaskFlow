@@ -19,6 +19,12 @@
 
 # production
 /build
+/dist
+
+# local design and audit artifacts
+/.aistudio/
+/.audit-*/
+/.dev-build/
 /public/
 /dist/server.js
 /server.js
