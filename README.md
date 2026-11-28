@@ -30,7 +30,7 @@ TaskFlow is a full-stack project and task management application. Create project
 
 - Node.js **20.19+** or **22.12+**, with npm.
 - A running MongoDB database, either a local MongoDB server or MongoDB Atlas.
-- The application source code and `package.json` are in this repository's `Frontend/` directory.
+- The application source code and `package.json` are in the repository root.
 
 Check that Node.js and npm are installed:
 
@@ -41,10 +41,9 @@ npm --version
 
 ### 2. Install dependencies
 
-From the repository root, enter the application directory and install its dependencies:
+From the repository root, install the application dependencies:
 
 ```bash
-cd Frontend
 npm install
 ```
 
@@ -56,7 +55,7 @@ npm install
 
 ### 4. Create the environment file
 
-From inside `Frontend/`, copy `.env.example` to `.env`:
+From the repository root, copy `.env.example` to `.env`:
 
 **Windows PowerShell:**
 
@@ -92,7 +91,7 @@ For Atlas, set `MONGODB_URI` to your Atlas connection string and set `MONGODB_RE
 
 ### 5. Start the development server
 
-Run this command from the `Frontend/` directory:
+Run this command from the repository root:
 
 ```bash
 npm run dev
@@ -104,7 +103,7 @@ Press **Ctrl+C** in the terminal to stop the server. If you change `PORT`, open 
 
 ### 6. Run tests, type-check, and build
 
-Run these commands from `Frontend/`:
+Run these commands from the repository root:
 
 ```bash
 npm test       # Run the test suite
@@ -120,7 +119,7 @@ Production also requires MongoDB and the required environment variables. Set `NO
 
 | Issue | What to check |
 | --- | --- |
-| `MONGODB_URI is required` | Make sure `Frontend/.env` exists and `MONGODB_URI` is set. |
+| `MONGODB_URI is required` | Make sure `.env` exists and `MONGODB_URI` is set. |
 | MongoDB connection failed | Check that MongoDB is running, the URI and credentials are correct, and—if using Atlas—your IP is on the network allowlist. |
 | `BETTER_AUTH_SECRET` error | Set `BETTER_AUTH_SECRET` or `AUTH_SECRET` in `.env`. |
 | Port is already in use | Set another `PORT` in `.env` or stop the process using that port. |
@@ -130,14 +129,13 @@ Production also requires MongoDB and the required environment variables. Set `NO
 
 ```text
 .
-└── Frontend/
-    ├── README.md
-    ├── server.ts             # Express server and API setup
-    ├── server/               # Database, auth, permissions, and API routes
-    ├── src/                  # React views, components, API helpers, and state
-    ├── scripts/              # Development server and test runner
-    ├── .env.example          # Environment variable template
-    └── package.json          # Application scripts and dependencies
+├── README.md
+├── server.ts             # Express server and API setup
+├── server/               # Database, auth, permissions, and API routes
+├── src/                  # React views, components, API helpers, and state
+├── scripts/              # Development server and test runner
+├── .env.example          # Environment variable template
+└── package.json          # Application scripts and dependencies
 ```
 
 ## API overview
