@@ -264,7 +264,7 @@ export const KanbanBoardView: React.FC = () => {
                           onDragStart={(e) => { if (canManage) handleDragStart(e, task.id); }}
                           onDragEnd={handleDragEnd}
                           onClick={() => openTaskModal(task.id)}
-                          className={`p-3 bg-white dark:bg-slate-850 rounded-lg border border-slate-200 dark:border-slate-800 shadow-2xs hover:shadow-xs hover:border-blue-400 dark:hover:border-blue-600 transition-all ${canManage ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} group ${
+                          className={`p-3 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 shadow-2xs hover:shadow-xs hover:border-blue-400 dark:hover:border-blue-600 transition-all ${canManage ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} group ${
                             isBeingDragged ? 'opacity-40 scale-95' : 'opacity-100'
                           }`}
                         >
